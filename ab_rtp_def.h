@@ -17,9 +17,9 @@ extern "C" {
 #define RTP_VERSION             2
 #define RTP_PAYLOAD_TYPE_H264   96
 #define RTP_PAYLOAD_TYPE_AAC    97
-#define RTP_MAX_PACKET_SIZE     1400
+#define RTP_MAX_PACKET_SIZE     1360
 
-struct rtp_header_t {
+typedef struct ab_rtp_header_t {
     uint8_t csrc_len:4;
     uint8_t extension:1;
     uint8_t padding:1;
@@ -32,12 +32,13 @@ struct rtp_header_t {
 
     uint32_t timestamp;
     uint32_t ssrc;
-};
+} ab_rtp_header_t;
 
-struct rtp_packet_t {
-    struct rtp_header_t header;
+typedef struct ab_rtp_packet_t {
+    uint8_t header[4];
+    ab_rtp_header_t rtp_header;
     uint8_t payload[0];
-};
+} ab_rtp_packet_t;
 
 #ifdef __cplusplus
 }
