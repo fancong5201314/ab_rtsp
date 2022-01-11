@@ -29,10 +29,11 @@
 
 static unsigned short rtsp_port = 9527;
 
-typedef struct ab_data_t {
-    void *buf;
-    uint32_t size;
-} ab_data_t;
+typedef struct ab_rtsp_buffer_t {
+    void *data;
+    int size;
+    int used;
+} ab_rtsp_buffer_t;
 
 typedef struct ab_select_args_t {
     int max_fd;
@@ -53,9 +54,9 @@ struct T {
     pthread_mutex_t mutex;
     pthread_t rtsp_thd;
 
-    ab_data_t data;
-    pthread_mutex_t rtp_sender_mutex;
-    pthread_t rtp_sender_thd;
+    ab_rtsp_buffer_t nalu_cache;
+    ab_rtp_packet_t *rtp_pkt;
+    unsigned int rtp_pkt_len;
 };
 
 static void get_sock_info(ab_socket_t sock,
@@ -280,62 +281,6 @@ static void *rtsp_event_start_routine(void *arg) {
     return NULL;
 }
 
-static void rtp_sender_func(void **x, void *user_data) {
-    assert(x && *x);
-    assert(user_data);
-
-    ab_socket_t sock = (ab_socket_t) *x;
-    ab_data_t *data = (ab_data_t *) user_data;
-
-    ab_socket_send(sock, data->buf, data->size);
-}
-
-static void *rtp_sender_start_routine(void *arg) {
-    assert(arg);
-
-    T rtsp = (T) arg;
-
-    ab_rtp_packet_t *rtp_pkt =
-        (ab_rtp_packet_t *) ALLOC(sizeof(ab_rtp_packet_t) + RTP_MAX_PACKET_SIZE);
-    rtp_pkt->header[0] = '$';
-    rtp_pkt->header[1] = 0;
-    rtp_pkt->header[2] = 0;
-    rtp_pkt->header[3] = 0;
-
-    rtp_pkt->rtp_header.csrc_len        = 0;
-    rtp_pkt->rtp_header.extension       = 0;
-    rtp_pkt->rtp_header.padding         = 0;
-    rtp_pkt->rtp_header.version         = RTP_VERSION;
-    rtp_pkt->rtp_header.payload_type    = RTP_PAYLOAD_TYPE_H264;
-    rtp_pkt->rtp_header.marker          = 0;
-    rtp_pkt->rtp_header.seq             = 0;
-    rtp_pkt->rtp_header.timestamp       = 0;
-    rtp_pkt->rtp_header.ssrc            = 0x88923423;
-
-    ab_data_t data;
-
-    while (!rtsp->quit) {
-        rtp_pkt->rtp_header.seq         = htons(rtp_pkt->rtp_header.seq);
-        rtp_pkt->rtp_header.timestamp   = htonl(rtp_pkt->rtp_header.timestamp);
-        rtp_pkt->rtp_header.ssrc        = htonl(rtp_pkt->rtp_header.ssrc);
-
-        pthread_mutex_lock(&rtsp->rtp_sender_mutex);
-        data.buf = &rtp_pkt;
-        data.size = 0;
-        pthread_mutex_unlock(&rtsp->rtp_sender_mutex);
-
-        pthread_mutex_lock(&rtsp->mutex);
-        list_map(rtsp->clients_already, rtp_sender_func, &data);
-        pthread_mutex_unlock(&rtsp->mutex);
-
-        rtp_pkt->rtp_header.seq         = ntohs(rtp_pkt->rtp_header.seq);
-        rtp_pkt->rtp_header.timestamp   = ntohl(rtp_pkt->rtp_header.timestamp);
-        rtp_pkt->rtp_header.ssrc        = ntohl(rtp_pkt->rtp_header.ssrc);
-    }
-
-    return NULL;
-}
-
 static void accept_func(ab_socket_t sock, void *user_data) {
     assert(sock);
     assert(user_data);
@@ -368,10 +313,24 @@ T ab_rtsp_new(int rtsp_over_method) {
     rtsp->quit = false;
     pthread_create(&rtsp->rtsp_thd, NULL, rtsp_event_start_routine, rtsp);
 
-    rtsp->data.size = 1024 * 1024;
-    rtsp->data.buf = ALLOC(rtsp->data.size);
-    pthread_mutex_init(&rtsp->rtp_sender_mutex, NULL);
-    pthread_create(&rtsp->rtp_sender_thd, NULL, rtp_sender_start_routine, rtsp);
+    rtsp->nalu_cache.size       = 512 * 1024;
+    rtsp->nalu_cache.used       = 0;
+    rtsp->nalu_cache.data       = ALLOC(rtsp->nalu_cache.size);
+
+    rtsp->rtp_pkt =
+        (ab_rtp_packet_t *) ALLOC(sizeof(ab_rtp_packet_t) + RTP_MAX_PACKET_SIZE);
+
+    rtsp->rtp_pkt->rtp_header.csrc_len      = 0;
+    rtsp->rtp_pkt->rtp_header.extension     = 0;
+    rtsp->rtp_pkt->rtp_header.padding       = 0;
+    rtsp->rtp_pkt->rtp_header.version       = RTP_VERSION;
+    rtsp->rtp_pkt->rtp_header.payload_type  = RTP_PAYLOAD_TYPE_H264;
+    rtsp->rtp_pkt->rtp_header.marker        = 0;
+    rtsp->rtp_pkt->rtp_header.seq           = 0;
+    rtsp->rtp_pkt->rtp_header.timestamp     = 0;
+    rtsp->rtp_pkt->rtp_header.ssrc          = 0x88923423;
+
+    rtsp->rtp_pkt_len                       = 0;
 
     return rtsp;
 }
@@ -380,9 +339,8 @@ void ab_rtsp_free(T *rtsp) {
     assert(rtsp && *rtsp);
 
     (*rtsp)->quit = true;
-    pthread_join((*rtsp)->rtp_sender_thd, NULL);
-    pthread_mutex_destroy(&(*rtsp)->rtp_sender_mutex);
-    FREE((*rtsp)->data.buf);
+    FREE((*rtsp)->rtp_pkt);
+    FREE((*rtsp)->nalu_cache.data);
 
     pthread_join((*rtsp)->rtsp_thd, NULL);
     pthread_mutex_destroy(&(*rtsp)->mutex);
@@ -400,8 +358,174 @@ void ab_rtsp_free(T *rtsp) {
     FREE(*rtsp);
 }
 
+static bool start_code3(const char *data, unsigned int data_size) {
+    if (data_size >= 3 &&
+        0x00 == data[0] && 0x00 == data[1] && 0x01 == data[2])
+        return true;
+    return false;
+}
+
+static bool start_code4(const char *data, unsigned int data_size) {
+    if (data_size >= 4 &&
+        0x00 == data[0] && 0x00 == data[1] &&
+        0x00 == data[2] && 0x01 == data[3])
+        return true;
+    return false;
+}
+
+static int find_start_code(const char *data, unsigned int data_size) {
+    unsigned int i;
+    for (i = 0; i < data_size - 4; i++)
+        if (start_code3(data + i, 3) || start_code4(data + i, 4))
+            break;
+
+    if ((i < data_size - 4) || start_code3(data + i, 3))
+        return i;
+    return -1;
+}
+
+static void rtp_sender_apply(void **x, void *user_data) {
+    assert(x && *x);
+    assert(user_data);
+
+    ab_socket_t sock = (ab_socket_t) *x;
+    ab_rtsp_buffer_t *buf = (ab_rtsp_buffer_t *) user_data;
+
+    ab_socket_send(sock, buf->data, buf->used);
+}
+
+static void rtp_sender_func(T rtsp) {
+    assert(rtsp);
+
+    int start_code = 0;
+    if (start_code3(rtsp->nalu_cache.data, rtsp->nalu_cache.used))
+        start_code = 3;
+    else if (start_code3(rtsp->nalu_cache.data, rtsp->nalu_cache.used))
+        start_code = 4;
+    else
+        return;
+
+    int data_size = rtsp->nalu_cache.used - start_code;
+
+    ab_rtsp_buffer_t buf;
+    if (data_size < RTP_MAX_PACKET_SIZE) {
+        rtsp->rtp_pkt->header[0]    = '$';
+        rtsp->rtp_pkt->header[1]    = 0;
+        rtsp->rtp_pkt->header[2]    =
+                        ((data_size + sizeof(ab_rtp_header_t)) & 0xff00) >> 8;
+        rtsp->rtp_pkt->header[3]    =
+                        (data_size + sizeof(ab_rtp_header_t)) & 0xff;
+
+        rtsp->rtp_pkt->rtp_header.seq       = htons(rtsp->rtp_pkt->rtp_header.seq);
+        rtsp->rtp_pkt->rtp_header.timestamp = htonl(rtsp->rtp_pkt->rtp_header.timestamp);
+        rtsp->rtp_pkt->rtp_header.ssrc      = htonl(rtsp->rtp_pkt->rtp_header.ssrc);
+
+        pthread_mutex_lock(&rtsp->mutex);
+        memcpy(rtsp->rtp_pkt->payload, rtsp->nalu_cache.data + start_code, data_size);
+        buf.data = rtsp->rtp_pkt;
+        buf.size = buf.used = data_size + sizeof(ab_rtp_header_t) + 4;
+        list_map(rtsp->clients_already, rtp_sender_apply, &rtsp->nalu_cache);
+        pthread_mutex_unlock(&rtsp->mutex);
+
+        rtsp->rtp_pkt->rtp_header.seq       = ntohs(rtsp->rtp_pkt->rtp_header.seq);
+        rtsp->rtp_pkt->rtp_header.timestamp = ntohl(rtsp->rtp_pkt->rtp_header.timestamp);
+        rtsp->rtp_pkt->rtp_header.ssrc      = ntohl(rtsp->rtp_pkt->rtp_header.ssrc);
+
+        rtsp->rtp_pkt->rtp_header.seq++;
+    } else {
+        int pkt_num = data_size / RTP_MAX_PACKET_SIZE;
+        int remain_pkt_size = data_size % RTP_MAX_PACKET_SIZE;
+        int nalu_type = ((char *) rtsp->nalu_cache.data)[start_code];
+        int i;
+        for (i = 0; i < pkt_num; i++) {
+            rtsp->rtp_pkt->header[0]    = '$';
+            rtsp->rtp_pkt->header[1]    = 0;
+            rtsp->rtp_pkt->header[2]    =
+                ((RTP_MAX_PACKET_SIZE + sizeof(ab_rtp_header_t)) & 0xff00) >> 8;
+            rtsp->rtp_pkt->header[3]    =
+                (RTP_MAX_PACKET_SIZE + sizeof(ab_rtp_header_t)) & 0xff;
+
+            rtsp->rtp_pkt->rtp_header.seq       = htons(rtsp->rtp_pkt->rtp_header.seq);
+            rtsp->rtp_pkt->rtp_header.timestamp = htonl(rtsp->rtp_pkt->rtp_header.timestamp);
+            rtsp->rtp_pkt->rtp_header.ssrc      = htonl(rtsp->rtp_pkt->rtp_header.ssrc);
+
+            rtsp->rtp_pkt->payload[0] = (nalu_type & 0x60) | 28;
+            rtsp->rtp_pkt->payload[1] = nalu_type & 0x1f;
+
+            if (0 == i)
+                rtsp->rtp_pkt->payload[1] |= 0x80;
+            else if (0 == remain_pkt_size && i == pkt_num - 1)
+                rtsp->rtp_pkt->payload[1] |= 0x40;
+
+            memcpy(rtsp->rtp_pkt->payload + 2, rtsp->nalu_cache.data + start_code, data_size);
+            pthread_mutex_lock(&rtsp->mutex);
+            buf.data = rtsp->rtp_pkt;
+            buf.size = buf.used = RTP_MAX_PACKET_SIZE + sizeof(ab_rtp_header_t) + 4 + 2;
+            list_map(rtsp->clients_already, rtp_sender_apply, &buf);
+            pthread_mutex_unlock(&rtsp->mutex);
+
+            rtsp->rtp_pkt->rtp_header.seq       = ntohs(rtsp->rtp_pkt->rtp_header.seq);
+            rtsp->rtp_pkt->rtp_header.timestamp = ntohl(rtsp->rtp_pkt->rtp_header.timestamp);
+            rtsp->rtp_pkt->rtp_header.ssrc      = ntohl(rtsp->rtp_pkt->rtp_header.ssrc);
+
+            rtsp->rtp_pkt->rtp_header.seq++;
+        }
+
+        if (remain_pkt_size != 0) {
+            rtsp->rtp_pkt->header[0]    = '$';
+            rtsp->rtp_pkt->header[1]    = 0;
+            rtsp->rtp_pkt->header[2]    =
+                ((remain_pkt_size + sizeof(ab_rtp_header_t)) & 0xff00) >> 8;
+            rtsp->rtp_pkt->header[3]    =
+                (remain_pkt_size + sizeof(ab_rtp_header_t)) & 0xff;
+
+            rtsp->rtp_pkt->rtp_header.seq       = htons(rtsp->rtp_pkt->rtp_header.seq);
+            rtsp->rtp_pkt->rtp_header.timestamp = htonl(rtsp->rtp_pkt->rtp_header.timestamp);
+            rtsp->rtp_pkt->rtp_header.ssrc      = htonl(rtsp->rtp_pkt->rtp_header.ssrc);
+
+            rtsp->rtp_pkt->payload[0] = (nalu_type & 0x60) | 28;
+            rtsp->rtp_pkt->payload[1] = (nalu_type & 0x1f) | 0x40;
+            memcpy(rtsp->rtp_pkt->payload + 2,
+                rtsp->nalu_cache.data + start_code + i * RTP_MAX_PACKET_SIZE,
+                remain_pkt_size);
+
+            pthread_mutex_lock(&rtsp->mutex);
+            buf.data = rtsp->rtp_pkt;
+            buf.size = buf.used = remain_pkt_size + sizeof(ab_rtp_header_t) + 4 + 2;
+            list_map(rtsp->clients_already, rtp_sender_apply, &buf);
+            pthread_mutex_unlock(&rtsp->mutex);
+
+            rtsp->rtp_pkt->rtp_header.seq       = ntohs(rtsp->rtp_pkt->rtp_header.seq);
+            rtsp->rtp_pkt->rtp_header.timestamp = ntohl(rtsp->rtp_pkt->rtp_header.timestamp);
+            rtsp->rtp_pkt->rtp_header.ssrc      = ntohl(rtsp->rtp_pkt->rtp_header.ssrc);
+
+            rtsp->rtp_pkt->rtp_header.seq++;
+        }
+    }
+
+    rtsp->rtp_pkt->rtp_header.timestamp   += 90000 / 25;
+}
+
 int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
-    pthread_mutex_lock(&rtsp->rtp_sender_mutex);
-    pthread_mutex_unlock(&rtsp->rtp_sender_mutex);
+    int first_start_code = find_start_code(data, data_size);
+    if (0 == first_start_code) {
+        int next_start_code = find_start_code(data + 4, data_size - 4);
+        if (-1 == next_start_code) {
+            memcpy(rtsp->nalu_cache.data, data, data_size);
+            rtsp->nalu_cache.used = data_size;
+        } else {
+            memcpy(rtsp->nalu_cache.data, data, next_start_code + 4);
+            rtsp->nalu_cache.used = next_start_code + 4;
+            rtp_sender_func(rtsp);
+            rtsp->nalu_cache.used = 0;
+        }
+    } else {
+        if (rtsp->nalu_cache.used > 0) {
+            memcpy(rtsp->nalu_cache.data + rtsp->nalu_cache.used, data, first_start_code);
+            rtsp->nalu_cache.used += first_start_code;
+            rtp_sender_func(rtsp);
+            rtsp->nalu_cache.used = 0;
+        }
+    }
     return 0;
 }
