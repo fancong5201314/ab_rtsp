@@ -2,6 +2,7 @@
 
 #include "ab_log/ab_logger.h"
 
+#include <stdio.h>
 #include <stdbool.h>
 #include <unistd.h>
 #include <sys/signal.h>
@@ -9,9 +10,8 @@
 static bool g_quit = true;
 
 static void signal_catch(int signal_num) {
-    if (SIGINT == signal_num) {
+    if (SIGINT == signal_num)
         g_quit = true;
-    }
 }
 
 int main(int argc, char *argv[]) {
@@ -25,8 +25,25 @@ int main(int argc, char *argv[]) {
     AB_LOGGER_INFO("RTSP server startup.\n");
 
     g_quit = false;
-    while (!g_quit)
-        sleep(1);
+    int nread = 0;
+    const unsigned int data_buf_size = 256;
+    char data_buf[data_buf_size];
+    FILE *file = fopen("test.h264", "rb");
+    while (!g_quit) {
+        if (file != NULL) {
+            nread = fread(data_buf, 1, data_buf_size, file);
+            if (nread > 0)
+                ab_rtsp_send(rtsp, data_buf, nread);
+            else {
+                ab_rtsp_send(rtsp, NULL, 0);
+                fseek(file, 0, SEEK_SET);
+            }
+        }
+
+        usleep(40 * 1000);
+    }
+
+    fclose(file);
 
     AB_LOGGER_INFO("RTSP server quit.\n");
 
