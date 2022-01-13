@@ -15,7 +15,7 @@
 #define T except_t
 except_frame_t *except_stack = NULL;
 void except_raise(const T *e, const char *file, int line) {
-#ifdef WIN32
+#ifdef __MINGW32__
     except_frame_t *p;
     if (-1 == except_index)
         except_init();
@@ -39,7 +39,7 @@ void except_raise(const T *e, const char *file, int line) {
     p->exception = e;
     p->file = file;
     p->line = line;
-#ifdef WIN32
+#ifdef __MINGW32__
     except_pop();
 #else
     except_stack = except_stack->prev;
@@ -47,7 +47,7 @@ void except_raise(const T *e, const char *file, int line) {
     longjmp(p->env, EXCEPT_RAISED);
 }
 
-#ifdef WIN32
+#ifdef __MINGW32__
 _CRTIMP void _cdecl _assert(void *, void *, unsigned);
 #undef assert
 #define assert(e) ((e) || (_assert(#e, __FILE__, __LINE__), 0))

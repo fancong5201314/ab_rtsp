@@ -13,8 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifdef WIN32
-//#include <winsock2.h>
+#ifdef __MINGW32__
 #else
 #include <unistd.h>
 #include <sys/types.h>
@@ -26,7 +25,7 @@
 #define T ab_socket_t
 
 struct T {
-#ifdef WIN32
+#ifdef __MINGW32__
     SOCKET fd;
 #else
     int fd;
@@ -48,7 +47,7 @@ T ab_socket_new(int sock_type) {
     } else if (AB_SOCKET_UDP_INET == sock_type) {
         af = AF_INET;
         type = SOCK_DGRAM;
-#ifdef WIN32
+#ifdef __MINGW32__
 #else
     } else if (AB_SOCKET_TCP_INET6 == sock_type) {
         af = AF_INET6;
@@ -60,7 +59,7 @@ T ab_socket_new(int sock_type) {
     } else
         return NULL;
 
-#ifdef WIN32
+#ifdef __MINGW32__
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(1, 1), &wsa_data) == SOCKET_ERROR) {
         perror("WSAStartup");
@@ -68,7 +67,7 @@ T ab_socket_new(int sock_type) {
     }
 #endif
 
-#ifdef WIN32
+#ifdef __MINGW32__
     SOCKET sock_fd = socket(af, type, 0);
     if (INVALID_SOCKET == sock_fd)
 #else
@@ -90,7 +89,7 @@ T ab_socket_new(int sock_type) {
 void ab_socket_free(T *sock) {
     assert(sock && *sock);
 
-#ifdef WIN32
+#ifdef __MINGW32__
     if ((*sock)->fd != INVALID_SOCKET)
         closesocket((*sock)->fd);
     WSACleanup();
@@ -139,7 +138,7 @@ T ab_socket_accept(T sock) {
 
     struct sockaddr conn_addr;
     memset(&conn_addr, 0, sizeof(conn_addr));
-#ifdef WIN32
+#ifdef __MINGW32__
     int len = sizeof(conn_addr);
 #else
     socklen_t len = sizeof(conn_addr);
@@ -202,7 +201,7 @@ int ab_socket_udp_recv(T sock, char *from_addr_buf, unsigned int addr_buf_size,
     assert(buf && buf_size > 0);
 
     struct sockaddr addr;
-#ifdef WIN32
+#ifdef __MINGW32__
     int addr_len = sizeof(addr);
 #else
     socklen_t addr_len = sizeof(addr);
@@ -228,7 +227,7 @@ int ab_socket_set_addr(int type, struct sockaddr *sock_addr,
         if (NULL == addr)
             inaddr->sin_addr.s_addr = INADDR_ANY;
         else
-#ifdef WIN32
+#ifdef __MINGW32__
             inaddr->sin_addr.s_addr = inet_addr(addr);
 #else
             inet_pton(AF_INET, addr, &inaddr->sin_addr);
@@ -236,7 +235,7 @@ int ab_socket_set_addr(int type, struct sockaddr *sock_addr,
         inaddr->sin_port = htons(port);
     } else if (AB_SOCKET_TCP_INET6 == type ||
                AB_SOCKET_UDP_INET6 == type) {
-#ifdef WIN32
+#ifdef __MINGW32__
 #else
         struct sockaddr_in6 *in6addr =  (struct sockaddr_in6 *)&addr;
         in6addr->sin6_family = AF_INET6;
@@ -261,7 +260,7 @@ int ab_socket_get_addr(int type, const struct sockaddr *sock_addr,
         const struct sockaddr_in *inaddr =
                 (const struct sockaddr_in *) sock_addr;
         if (addr_buf != NULL && buf_size != 0) {
-#ifdef WIN32
+#ifdef __MINGW32__
             char *addr = inet_ntoa(inaddr->sin_addr);
             strncpy(addr_buf, addr, buf_size);
 #else
@@ -273,7 +272,7 @@ int ab_socket_get_addr(int type, const struct sockaddr *sock_addr,
             *port = ntohs(inaddr->sin_port);
     } else if (AB_SOCKET_TCP_INET6 == type ||
                AB_SOCKET_UDP_INET6 == type) {
-#ifdef WIN32
+#ifdef __MINGW32__
 #else
         const struct sockaddr_in6 *in6addr =
                 (const struct sockaddr_in6 *) &sock_addr;
@@ -312,20 +311,27 @@ int ab_socket_reuse_addr(T sock) {
     assert(sock->fd > 0);
 
     int opt_val = 0x1;
-#ifdef WIN32
+#ifdef __MINGW32__
     if (setsockopt(sock->fd, SOL_SOCKET, SO_REUSEADDR,
             (const char *) &opt_val, sizeof(opt_val)) == -1)
 #else
     if (setsockopt(sock->fd, SOL_SOCKET, SO_REUSEADDR,
-            &opt_val, sizeof(opt_val)) == -1)
+                   &opt_val, sizeof(opt_val)) == -1)
 #endif
         return -1;
 
+    return 0;
+}
+
+int ab_socket_reuse_port(T sock) {
+    assert(sock);
+    assert(sock->fd > 0);
+
+    int opt_val = 0x1;
 #ifdef __APPLE_CC__
     if (setsockopt(sock->fd, SOL_SOCKET, SO_REUSEPORT,
-            &opt_val, sizeof(opt_val)) == -1)
+                   &opt_val, sizeof(opt_val)) == -1)
         return -1;
 #endif
-
     return 0;
 }

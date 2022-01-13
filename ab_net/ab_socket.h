@@ -34,7 +34,7 @@ extern T    ab_socket_accept(T sock);
 extern int  ab_socket_send(T sock, const char *data, unsigned int data_len);
 extern int  ab_socket_recv(T sock, char *buf, unsigned int buf_size);
 extern int  ab_socket_udp_send(T sock, const char *to_addr, unsigned short to_port,
-        const char *data, unsigned int data_len);
+                               const char *data, unsigned int data_len);
 extern int  ab_socket_udp_recv(T sock, char *from_addr_buf, unsigned int addr_buf_size,
         unsigned short *from_port, char *buf, unsigned int buf_size);
 
@@ -43,6 +43,7 @@ extern int  ab_socket_addr(T sock, char *buf, unsigned int buf_size);
 extern int  ab_socket_port(T sock, unsigned short *port);
 
 extern int  ab_socket_reuse_addr(T sock);
+extern int  ab_socket_reuse_port(T sock);
 
 #undef T
 
