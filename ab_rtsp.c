@@ -25,6 +25,8 @@
 #include <unistd.h>
 #include <sys/select.h>
 
+#include <arpa/inet.h>
+
 #define T ab_rtsp_t
 
 static unsigned short rtp_server_port = 20001;

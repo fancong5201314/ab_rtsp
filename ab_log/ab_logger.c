@@ -75,7 +75,7 @@ static const char* ab_layout(const log4c_layout_t *a_layout, const log4c_logging
     t = a_event->evt_timestamp.tv_sec;
     /* gmtime_r(&t, &tm); */
     localtime_r(&t, &tm);
-    snprintf(buffer, sizeof(buffer), "[%04d%02d%02d %02d:%02d:%02d.%03d] %s[%8s]%s %s",
+    snprintf(buffer, sizeof(buffer), "[%04d%02d%02d %02d:%02d:%02d.%03ld] %s[%8s]%s %s",
              tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
              tm.tm_hour, tm.tm_min, tm.tm_sec,
              a_event->evt_timestamp.tv_usec / 1000,

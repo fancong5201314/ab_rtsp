@@ -6,7 +6,7 @@ CC=gcc
 
 CFLAGS=-I. \
 	   -I3rd_party/log4c/include \
-	   -g3 -std=c11
+	   -g3 -std=gnu11
 
 LDFLAGS=-L3rd_party/log4c/lib \
 	    -llog4c -lpthread
