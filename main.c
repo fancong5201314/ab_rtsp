@@ -1,5 +1,7 @@
 #include "ab_rtsp.h"
 
+#include "ab_base/ab_mem.h"
+
 #include "ab_log/ab_logger.h"
 
 #include <stdio.h>
@@ -26,8 +28,8 @@ int main(int argc, char *argv[]) {
 
     g_quit = false;
     int nread = 0;
-    const unsigned int data_buf_size = 256;
-    char data_buf[data_buf_size];
+    const unsigned int data_buf_size = 10 * 1024;
+    char *data_buf = (char *) ALLOC(data_buf_size);
     FILE *file = fopen("test.h264", "rb");
     while (!g_quit) {
         if (file != NULL) {
@@ -39,9 +41,11 @@ int main(int argc, char *argv[]) {
                 fseek(file, 0, SEEK_SET);
             }
         }
-
         usleep(40 * 1000);
     }
+
+    FREE(data_buf);
+    data_buf = NULL;
 
     fclose(file);
 

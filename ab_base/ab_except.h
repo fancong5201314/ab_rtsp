@@ -40,7 +40,7 @@ extern const except_t assert_failed;
 
 void except_raise(const T *e, const char *file, int line);
 
-#ifdef WIN32
+#ifdef __MINGW32__
 #include <windows.h>
 extern int except_index;
 extern void except_init();
@@ -48,7 +48,7 @@ extern void except_push(except_frame_t *fp);
 extern void except_pop();
 #endif
 
-#ifdef WIN32
+#ifdef __MINGW32__
 #define RAISE(e) except_raise(&(e), __FILE__, __LINE__)
 #define RERAISE except_raise(except_frame.exception, \
         except_frame.file, except_frame.line)
