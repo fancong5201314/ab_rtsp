@@ -17,6 +17,11 @@ static void signal_catch(int signal_num) {
 }
 
 int main(int argc, char *argv[]) {
+    if (argc < 2)
+        return -1;
+
+    const char *in_file = argv[1];
+
     signal(SIGINT, signal_catch);
 
     ab_logger_init(AB_LOGGER_OUTPUT_TO_STDOUT, ".", "log", 100, 1024 * 1024);
@@ -30,7 +35,7 @@ int main(int argc, char *argv[]) {
     int nread = 0;
     const unsigned int data_buf_size = 10 * 1024;
     char *data_buf = (char *) ALLOC(data_buf_size);
-    FILE *file = fopen("test.h264", "rb");
+    FILE *file = fopen(in_file, "rb");
     while (!g_quit) {
         if (file != NULL) {
             nread = fread(data_buf, 1, data_buf_size, file);

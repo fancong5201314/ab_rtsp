@@ -188,13 +188,13 @@ static void process_rtsp_msg(ab_socket_t *sock, T rtsp) {
             len = handle_cmd_describe(response, sizeof(response), url, cseq);
         else if (strcmp(method, "SETUP") == 0) {
             unsigned short rtp_port = 0, rtcp_port = 1;
-            line = strstr(line, "Transport");
+            line = strstr(request, "Transport");
             if (AB_RTSP_OVER_UDP == rtsp->method) {
                 sscanf(line, "Transport: RTP/AVP;unicast;client_port=%hu-%hu\r\n",
-                                &rtp_port, &rtcp_port);
+                             &rtp_port, &rtcp_port);
             } else if (AB_RTSP_OVER_TCP == rtsp->method) {
                 sscanf(line, "Transport: RTP/AVP/TCP;unicast;interleaved=%hu-%hu\r\n",
-                                &rtp_port, &rtcp_port);
+                             &rtp_port, &rtcp_port);
             }
 
             len = handle_cmd_setup(response, sizeof(response), cseq,
@@ -389,7 +389,7 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
         int i;
         for (i = 0; i < pkt_num; i++) {
             unsigned short rtp_pkt_size = 0;
-            if (data_size >= i * RTP_MAX_PACKET_SIZE)
+            if (i < pkt_num - 1 || data_size % RTP_MAX_PACKET_SIZE == 0)
                 rtp_pkt_size = RTP_MAX_PACKET_SIZE + sizeof(ab_rtp_header_t) + 2;
             else
                 rtp_pkt_size = (data_size % RTP_MAX_PACKET_SIZE) + sizeof(ab_rtp_header_t) + 2;
@@ -411,7 +411,14 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
             else if (i == pkt_num - 1)
                 rtsp->rtp_pkt->payload[1] |= 0x40;
 
-            memcpy(rtsp->rtp_pkt->payload + 2, data + i * RTP_MAX_PACKET_SIZE, RTP_MAX_PACKET_SIZE);
+            if (i < pkt_num - 1 || data_size % RTP_MAX_PACKET_SIZE == 0)
+                memcpy(rtsp->rtp_pkt->payload + 2,
+                    data + i * RTP_MAX_PACKET_SIZE, RTP_MAX_PACKET_SIZE);
+            else
+                memcpy(rtsp->rtp_pkt->payload + 2,
+                    data + i * RTP_MAX_PACKET_SIZE,
+                    data_size % RTP_MAX_PACKET_SIZE);
+
             buf.size = buf.used = 0;
             if (AB_RTSP_OVER_TCP == rtsp->method) {
                 buf.data = rtsp->rtp_pkt;

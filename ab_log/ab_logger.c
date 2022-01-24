@@ -66,7 +66,8 @@ static const char *log_priority_color(int priority) {
     return text_color;
 }
 
-static const char* ab_layout(const log4c_layout_t *a_layout, const log4c_logging_event_t *a_event) {
+static const char* ab_layout(const log4c_layout_t *a_layout,
+    const log4c_logging_event_t *a_event) {
     static char buffer[4096];
     struct tm tm;
     time_t t;
@@ -75,7 +76,7 @@ static const char* ab_layout(const log4c_layout_t *a_layout, const log4c_logging
     t = a_event->evt_timestamp.tv_sec;
     /* gmtime_r(&t, &tm); */
     localtime_r(&t, &tm);
-    snprintf(buffer, sizeof(buffer), "[%04d%02d%02d %02d:%02d:%02d.%03ld] %s[%8s]%s %s",
+    snprintf(buffer, sizeof(buffer), "[%04d%02d%02d %02d:%02d:%02d.%03d] %s[%8s]%s %s",
              tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
              tm.tm_hour, tm.tm_min, tm.tm_sec,
              a_event->evt_timestamp.tv_usec / 1000,
@@ -87,7 +88,8 @@ static const char* ab_layout(const log4c_layout_t *a_layout, const log4c_logging
     return buffer;
 }
 
-static int ab_appender_stdout_append(log4c_appender_t* this, const log4c_logging_event_t* a_event) {
+static int ab_appender_stdout_append(log4c_appender_t* this,
+    const log4c_logging_event_t* a_event) {
     return fprintf(stdout, "%s", a_event->evt_rendered_msg);
 }
 
@@ -161,7 +163,9 @@ int ab_logger_init(ab_logger_output to,
     return 0;
 }
 
-void ab_logger_message(int priority, const char *file, int line, const char *fun, const char *fmt, ...) {
+void ab_logger_message(int priority,
+    const char *file, int line, const char *fun,
+    const char *fmt, ...) {
     char new_fmt[2048];
     const char * head_fmt = "[file:%s, line:%d, function:%s] ";
     va_list ap;
