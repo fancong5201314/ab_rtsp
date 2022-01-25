@@ -386,7 +386,7 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
         rtsp->rtp_pkt->rtp_header.seq++;
     } else {
         unsigned send_data_size = data_size - 1;
-        unsigned int pos = 1;
+        unsigned int pos = 0;
 
         int pkt_num = send_data_size / RTP_MAX_PACKET_SIZE;
         if (send_data_size % RTP_MAX_PACKET_SIZE != 0)
@@ -416,7 +416,7 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
             else if (i == pkt_num - 1)
                 rtsp->rtp_pkt->payload[1] |= 0x40;
 
-            pos += RTP_MAX_PACKET_SIZE;
+            pos = i * RTP_MAX_PACKET_SIZE + 1;
             if (i < pkt_num - 1 || send_data_size % RTP_MAX_PACKET_SIZE == 0)
                 memcpy(rtsp->rtp_pkt->payload + 2, data + pos, RTP_MAX_PACKET_SIZE);
             else
