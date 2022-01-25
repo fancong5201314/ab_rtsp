@@ -31,10 +31,10 @@
 
 static unsigned short rtp_server_port = 20001;
 static unsigned short rtcp_server_port = 20002;
-static unsigned short rtsp_port = 9527;
+static unsigned short rtsp_port = 554;
 
 typedef struct ab_rtsp_buffer_t {
-    void *data;
+    unsigned char *data;
     int size;
     int used;
 } ab_rtsp_buffer_t;
@@ -203,6 +203,9 @@ static void process_rtsp_msg(ab_socket_t *sock, T rtsp) {
             len = handle_cmd_play(response, sizeof(response), cseq);
             already = true;
         } else {
+            snprintf(response, sizeof(response),
+                    "RTSP/1.0 501 OK\r\n"
+                    "CSeq: %u\r\n\r\n", cseq);
             AB_LOGGER_DEBUG("Not implements method[%s]\n", method);
         }
 
@@ -351,8 +354,8 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
     int nalu_type = data[0];
     ab_rtsp_buffer_t buf;
     if (data_size < RTP_MAX_PACKET_SIZE) {
-        rtsp->rtp_pkt->header[0]    = '$';
-        rtsp->rtp_pkt->header[1]    = 0;
+        rtsp->rtp_pkt->header[0]    = 0x24;
+        rtsp->rtp_pkt->header[1]    = 0x0;
         rtsp->rtp_pkt->header[2]    =
                         ((data_size + sizeof(ab_rtp_header_t)) & 0xff00) >> 8;
         rtsp->rtp_pkt->header[3]    =
@@ -382,17 +385,20 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
 
         rtsp->rtp_pkt->rtp_header.seq++;
     } else {
-        int pkt_num = data_size / RTP_MAX_PACKET_SIZE;
-        if (data_size % RTP_MAX_PACKET_SIZE != 0)
+        unsigned send_data_size = data_size - 1;
+        unsigned int pos = 1;
+
+        int pkt_num = send_data_size / RTP_MAX_PACKET_SIZE;
+        if (send_data_size % RTP_MAX_PACKET_SIZE != 0)
             pkt_num++;
 
         int i;
         for (i = 0; i < pkt_num; i++) {
             unsigned short rtp_pkt_size = 0;
-            if (i < pkt_num - 1 || data_size % RTP_MAX_PACKET_SIZE == 0)
+            if (i < pkt_num - 1 || send_data_size % RTP_MAX_PACKET_SIZE == 0)
                 rtp_pkt_size = RTP_MAX_PACKET_SIZE + sizeof(ab_rtp_header_t) + 2;
             else
-                rtp_pkt_size = (data_size % RTP_MAX_PACKET_SIZE) + sizeof(ab_rtp_header_t) + 2;
+                rtp_pkt_size = (send_data_size % RTP_MAX_PACKET_SIZE) + sizeof(ab_rtp_header_t) + 2;
 
             rtsp->rtp_pkt->header[0]    = '$';
             rtsp->rtp_pkt->header[1]    = 0;
@@ -403,7 +409,7 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
             rtsp->rtp_pkt->rtp_header.timestamp = htonl(rtsp->rtp_pkt->rtp_header.timestamp);
             rtsp->rtp_pkt->rtp_header.ssrc      = htonl(rtsp->rtp_pkt->rtp_header.ssrc);
 
-            rtsp->rtp_pkt->payload[0] = (nalu_type & 0x60) | 28;
+            rtsp->rtp_pkt->payload[0] = (nalu_type & 0x60) | 0x1c;
             rtsp->rtp_pkt->payload[1] = nalu_type & 0x1f;
 
             if (0 == i)
@@ -411,13 +417,14 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
             else if (i == pkt_num - 1)
                 rtsp->rtp_pkt->payload[1] |= 0x40;
 
-            if (i < pkt_num - 1 || data_size % RTP_MAX_PACKET_SIZE == 0)
+            pos += i * RTP_MAX_PACKET_SIZE;
+            if (i < pkt_num - 1 || send_data_size % RTP_MAX_PACKET_SIZE == 0)
                 memcpy(rtsp->rtp_pkt->payload + 2,
-                    data + i * RTP_MAX_PACKET_SIZE, RTP_MAX_PACKET_SIZE);
+                    data + pos, RTP_MAX_PACKET_SIZE);
             else
                 memcpy(rtsp->rtp_pkt->payload + 2,
-                    data + i * RTP_MAX_PACKET_SIZE,
-                    data_size % RTP_MAX_PACKET_SIZE);
+                    data + pos,
+                    send_data_size % RTP_MAX_PACKET_SIZE);
 
             buf.size = buf.used = 0;
             if (AB_RTSP_OVER_TCP == rtsp->method) {
@@ -460,6 +467,9 @@ static bool start_code4(const char *data, unsigned int data_size) {
 }
 
 static int find_start_code(const char *data, unsigned int data_size) {
+    if (data_size < 4)
+        return -1;
+
     unsigned int i;
     for (i = 0; i < data_size - 4; i++)
         if (start_code3(data + i, 3) || start_code4(data + i, 4))
@@ -488,7 +498,7 @@ T ab_rtsp_new(int rtsp_over_method) {
 
     rtsp->buffer.size   = 1024 * 1024;
     rtsp->buffer.used   = 0;
-    rtsp->buffer.data   = ALLOC(rtsp->buffer.size);
+    rtsp->buffer.data   = (unsigned char *) ALLOC(rtsp->buffer.size);
 
     rtsp->rtp_pkt =
         (ab_rtp_packet_t *) ALLOC(sizeof(ab_rtp_packet_t) + RTP_MAX_PACKET_SIZE);
@@ -544,6 +554,7 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
                     start_code = 4;
 
                 rtp_sender_func(rtsp, rtsp->buffer.data + start_code, rtsp->buffer.used - start_code);
+                rtsp->buffer.used = 0;
             }
         }
 
@@ -582,6 +593,7 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
                 }
                 break;
             } else {
+                // print_data(rtsp->buffer.data + start_pos + start_code, next_start_code_pos);
                 rtp_sender_func(rtsp, rtsp->buffer.data + start_pos + start_code, next_start_code_pos);
                 start_pos += start_code + next_start_code_pos;
             }

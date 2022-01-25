@@ -17,7 +17,7 @@ extern "C" {
 #define RTP_VERSION             2
 #define RTP_PAYLOAD_TYPE_H264   96
 #define RTP_PAYLOAD_TYPE_AAC    97
-#define RTP_MAX_PACKET_SIZE     1360
+#define RTP_MAX_PACKET_SIZE     1400
 
 typedef struct ab_rtp_header_t {
     uint8_t csrc_len:4;
