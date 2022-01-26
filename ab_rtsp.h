@@ -21,7 +21,7 @@ enum ab_rtsp_over_method_t {
     AB_RTSP_OVER_UDP
 };
 
-extern T    ab_rtsp_new(int rtsp_over_method);
+extern T    ab_rtsp_new();
 extern void ab_rtsp_free(T *rtsp);
 
 extern int  ab_rtsp_send(T rtsp, const char *data, unsigned int data_size);
