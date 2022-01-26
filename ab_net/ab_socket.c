@@ -162,8 +162,11 @@ T ab_socket_accept(T sock) {
 
 int ab_socket_send(T sock, const char *data, unsigned int data_len) {
     assert(sock);
-    assert(sock->fd > 0);
-    assert(data && data_len > 0);
+    if (sock->fd <= 0)
+        return -1;
+
+    if (NULL == data || 0 == data_len)
+        return -1;
 
     if (AB_SOCKET_TCP_INET == sock->type ||
         AB_SOCKET_TCP_INET6 == sock->type)

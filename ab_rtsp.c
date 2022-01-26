@@ -44,13 +44,16 @@ typedef struct ab_select_args_t {
     fd_set rfds;
 } ab_select_args_t;
 
+typedef struct ab_rtsp_client_t *ab_rtsp_client_t;
+struct ab_rtsp_client_t {
+    ab_socket_t sock;
+    int status;
+};
+
 struct T {
     int method;
-
     ab_tcp_server_t srv;
-
-    list_t clients_all;
-    list_t clients_already;
+    list_t clients;
 
     ab_select_args_t slt_args;
 
@@ -80,7 +83,7 @@ static int handle_cmd_options(char *buf, unsigned int buf_size,
     snprintf(buf, buf_size, "RTSP/1.0 200 OK\r\n"
                             "CSeq: %u\r\n"
                             "Public: OPTIONS, DESCRIBE, SETUP, "
-                            "TEARDOWN, PLAY\r\n\r\n",
+                            "PLAY, TEARDOWN\r\n\r\n",
                             cseq);
     return strlen(buf);
 }
@@ -145,22 +148,30 @@ static int handle_cmd_play(char *buf, unsigned int buf_size,
     return strlen(buf);
 }
 
-static void process_rtsp_msg(ab_socket_t *sock, T rtsp) {
-    assert(sock && *sock);
+static int handle_cmd_not_supported(char *buf, unsigned int buf_size,
+    unsigned int cseq) {
+    snprintf(buf, buf_size,
+            "RTSP/1.0 551 Option not supported\r\n"
+            "CSeq: %u\r\n"
+            "Session: 66334873\r\n\r\n", cseq);
+    return strlen(buf);
+}
 
-    bool already = false;
+static void process_rtsp_msg(ab_rtsp_client_t client, int rtsp_method) {
+    assert(client);
 
     char request[4096];
     memset(request, 0, sizeof(request));
-    int nread = ab_socket_recv(*sock, request, sizeof(request));
-    if (nread < 0)
+    int nread = ab_socket_recv(client->sock, request, sizeof(request));
+    if (nread < 0) {
         AB_LOGGER_ERROR("return %d.\n", nread);
-    else if (0 == nread) {
+        ab_socket_free(&(client->sock));
+    } else if (0 == nread) {
         char sock_info[64];
         memset(sock_info, 0, sizeof(sock_info));
-        get_sock_info(*sock, sock_info, sizeof(sock_info));
+        get_sock_info(client->sock, sock_info, sizeof(sock_info));
         AB_LOGGER_DEBUG("Close connection[%s]\n", sock_info);
-        ab_socket_free(sock);
+        ab_socket_free(&(client->sock));
     } else {
         AB_LOGGER_DEBUG("request:\n%s\n", request);
         char method[16];
@@ -182,6 +193,8 @@ static void process_rtsp_msg(ab_socket_t *sock, T rtsp) {
         int len = 0;
         memset(response, 0, sizeof(response));
 
+        bool already = false;
+
         if (strcmp(method, "OPTIONS") == 0)
             len = handle_cmd_options(response, sizeof(response), cseq);
         else if (strcmp(method, "DESCRIBE") == 0)
@@ -189,32 +202,27 @@ static void process_rtsp_msg(ab_socket_t *sock, T rtsp) {
         else if (strcmp(method, "SETUP") == 0) {
             unsigned short rtp_port = 0, rtcp_port = 1;
             line = strstr(request, "Transport");
-            if (AB_RTSP_OVER_UDP == rtsp->method) {
+            if (AB_RTSP_OVER_UDP == rtsp_method)
                 sscanf(line, "Transport: RTP/AVP;unicast;client_port=%hu-%hu\r\n",
                              &rtp_port, &rtcp_port);
-            } else if (AB_RTSP_OVER_TCP == rtsp->method) {
+            else if (AB_RTSP_OVER_TCP == rtsp_method)
                 sscanf(line, "Transport: RTP/AVP/TCP;unicast;interleaved=%hu-%hu\r\n",
                              &rtp_port, &rtcp_port);
-            }
 
             len = handle_cmd_setup(response, sizeof(response), cseq,
-                                    rtsp->method, rtp_port, rtcp_port);
+                                    rtsp_method, rtp_port, rtcp_port);
         } else if (strcmp(method, "PLAY") == 0) {
             len = handle_cmd_play(response, sizeof(response), cseq);
             already = true;
-        } else {
-            snprintf(response, sizeof(response),
-                    "RTSP/1.0 501 OK\r\n"
-                    "CSeq: %u\r\n\r\n", cseq);
-            AB_LOGGER_DEBUG("Not implements method[%s]\n", method);
-        }
+        } else
+            handle_cmd_not_supported(response, sizeof(response), cseq);
 
         AB_LOGGER_DEBUG("response:\n%s\n", response);
         if (len > 0)
-            ab_socket_send(*sock, response, len);
+            ab_socket_send(client->sock, response, len);
 
         if (already)
-            rtsp->clients_already = list_push(rtsp->clients_already, *sock);
+            client->status = 1;
     }
 }
 
@@ -222,39 +230,46 @@ static void check_rtsp_event(void **x, void *user_data) {
     assert(x && *x);
     assert(user_data);
 
-    ab_socket_t sock = (ab_socket_t) *x;
+    ab_rtsp_client_t client = (ab_rtsp_client_t) *x;
     T rtsp = (T) user_data;
 
-    int fd = ab_socket_fd(sock);
+    int fd = ab_socket_fd(client->sock);
     if (FD_ISSET(fd, &rtsp->slt_args.rfds))
-        process_rtsp_msg((ab_socket_t *) x, rtsp);
+        process_rtsp_msg(client, rtsp->method);
 }
 
 static void fill_set(void **x, void *user_data) {
     assert(x && *x);
     assert(user_data);
 
-    ab_socket_t sock = (ab_socket_t) *x;
+    ab_rtsp_client_t client = (ab_rtsp_client_t) *x;
     ab_select_args_t *slt_args = (ab_select_args_t *) user_data;
 
-    int fd = ab_socket_fd((ab_socket_t) *x);
+    int fd = ab_socket_fd(client->sock);
     FD_SET(fd, &slt_args->rfds);
     if (fd > slt_args->max_fd)
         slt_args->max_fd = fd;
 }
 
 static list_t clients_clean_up(list_t head) {
-    while (head && NULL == head->first) {
-        list_t del_node = head;
-        head = head->rest;
-        FREE(del_node);
+    while (head) {
+        ab_rtsp_client_t client = head->first;
+        if (NULL == client->sock) {
+            list_t del_node = head;
+            head = head->rest;
+            FREE(del_node->first);
+            FREE(del_node);
+        } else
+            break;
     }
 
     list_t result = head;
     while (head && head->rest) {
-        if (NULL == head->rest->first) {
+        ab_rtsp_client_t client = head->rest->first;
+        if (NULL == client->sock) {
             list_t del_node = head->rest;
             head->rest = head->rest->rest;
+            FREE(del_node->first);
             FREE(del_node);
         } else
             head = head->rest;
@@ -274,7 +289,7 @@ static void *rtsp_event_start_routine(void *arg) {
         rtsp->slt_args.max_fd = -1;
 
         pthread_mutex_lock(&rtsp->mutex);
-        list_map(rtsp->clients_all, fill_set, &rtsp->slt_args);
+        list_map(rtsp->clients, fill_set, &rtsp->slt_args);
         pthread_mutex_unlock(&rtsp->mutex);
 
         if (-1 == rtsp->slt_args.max_fd) {
@@ -290,9 +305,8 @@ static void *rtsp_event_start_routine(void *arg) {
                 continue;
 
             pthread_mutex_lock(&rtsp->mutex);
-            list_map(rtsp->clients_all, check_rtsp_event, rtsp);
-            rtsp->clients_all = clients_clean_up(rtsp->clients_all);
-            rtsp->clients_already = clients_clean_up(rtsp->clients_already);
+            list_map(rtsp->clients, check_rtsp_event, rtsp);
+            rtsp->clients = clients_clean_up(rtsp->clients);
             pthread_mutex_unlock(&rtsp->mutex);
         }
     }
@@ -311,8 +325,14 @@ static void accept_func(ab_socket_t sock, void *user_data) {
 
     T rtsp = (T) user_data;
 
+    ab_rtsp_client_t new_client;
+    NEW(new_client);
+
+    new_client->sock = sock;
+    new_client->status = 0;
+
     pthread_mutex_lock(&rtsp->mutex);
-    rtsp->clients_all = list_push(rtsp->clients_all, sock);
+    rtsp->clients = list_push(rtsp->clients, new_client);
     pthread_mutex_unlock(&rtsp->mutex);
 }
 
@@ -331,12 +351,11 @@ static void rtp_sender_apply(void **x, void *user_data) {
     assert(x && *x);
     assert(user_data);
 
-    ab_socket_t sock = (ab_socket_t) *x;
+    ab_rtsp_client_t client = (ab_rtsp_client_t) *x;
     ab_rtsp_buffer_t *buf = (ab_rtsp_buffer_t *) user_data;
 
-    // print_data(buf->data, buf->used);
-
-    ab_socket_send(sock, buf->data, buf->used);
+    if (client->status)
+        ab_socket_send(client->sock, buf->data, buf->used);
 }
 
 static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
@@ -345,7 +364,7 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
     assert(data_size > 0);
 
     pthread_mutex_lock(&rtsp->mutex);
-    if (list_length(rtsp->clients_already) == 0) {
+    if (list_length(rtsp->clients) == 0) {
         pthread_mutex_unlock(&rtsp->mutex);
         return;
     }
@@ -376,7 +395,7 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
         }
 
         pthread_mutex_lock(&rtsp->mutex);
-        list_map(rtsp->clients_already, rtp_sender_apply, &buf);
+        list_map(rtsp->clients, rtp_sender_apply, &buf);
         pthread_mutex_unlock(&rtsp->mutex);
 
         rtsp->rtp_pkt->rtp_header.seq       = ntohs(rtsp->rtp_pkt->rtp_header.seq);
@@ -386,7 +405,6 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
         rtsp->rtp_pkt->rtp_header.seq++;
     } else {
         unsigned send_data_size = data_size - 1;
-        unsigned int pos = 0;
 
         int pkt_num = send_data_size / RTP_MAX_PACKET_SIZE;
         if (send_data_size % RTP_MAX_PACKET_SIZE != 0)
@@ -416,7 +434,7 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
             else if (i == pkt_num - 1)
                 rtsp->rtp_pkt->payload[1] |= 0x40;
 
-            pos = i * RTP_MAX_PACKET_SIZE + 1;
+            unsigned int pos = i * RTP_MAX_PACKET_SIZE + 1;
             if (i < pkt_num - 1 || send_data_size % RTP_MAX_PACKET_SIZE == 0)
                 memcpy(rtsp->rtp_pkt->payload + 2, data + pos, RTP_MAX_PACKET_SIZE);
             else
@@ -432,7 +450,7 @@ static void rtp_sender_func(T rtsp, const char *data, unsigned int data_size) {
             }
 
             pthread_mutex_lock(&rtsp->mutex);
-            list_map(rtsp->clients_already, rtp_sender_apply, &buf);
+            list_map(rtsp->clients, rtp_sender_apply, &buf);
             pthread_mutex_unlock(&rtsp->mutex);
 
             rtsp->rtp_pkt->rtp_header.seq       = ntohs(rtsp->rtp_pkt->rtp_header.seq);
@@ -484,8 +502,7 @@ T ab_rtsp_new(int rtsp_over_method) {
     rtsp->method = rtsp_over_method;
     rtsp->srv = ab_tcp_server_new(rtsp_port, accept_func, rtsp);
 
-    rtsp->clients_all = NULL;
-    rtsp->clients_already = NULL;
+    rtsp->clients = NULL;
 
     pthread_mutex_init(&rtsp->mutex, NULL);
 
@@ -525,13 +542,12 @@ void ab_rtsp_free(T *rtsp) {
     FREE((*rtsp)->rtp_pkt);
     FREE((*rtsp)->buffer.data);
 
-    while ((*rtsp)->clients_all) {
-        ab_socket_t sock = NULL;
-        (*rtsp)->clients_all = list_pop((*rtsp)->clients_all, (void **) &sock);
-        ab_socket_free(&sock);
+    while ((*rtsp)->clients) {
+        ab_rtsp_client_t client;
+        (*rtsp)->clients = list_pop((*rtsp)->clients, (void **) &client);
+        ab_socket_free(&(client->sock));
+        FREE(client);
     }
-
-    list_free(&(*rtsp)->clients_already);
 
     ab_tcp_server_free(&(*rtsp)->srv);
 
@@ -588,7 +604,6 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
                 }
                 break;
             } else {
-                // print_data(rtsp->buffer.data + start_pos + start_code, next_start_code_pos);
                 rtp_sender_func(rtsp, rtsp->buffer.data + start_pos + start_code, next_start_code_pos);
                 start_pos += start_code + next_start_code_pos;
             }
