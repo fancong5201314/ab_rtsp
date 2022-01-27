@@ -14,7 +14,9 @@
 
 #include "ab_log/ab_logger.h"
 
+#include "ab_net/ab_socket.h"
 #include "ab_net/ab_tcp_server.h"
+#include "ab_net/ab_udp_server.h"
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -29,8 +31,8 @@
 
 #define T ab_rtsp_t
 
-static unsigned short rtp_server_port = 20001;
-static unsigned short rtcp_server_port = 20002;
+static unsigned short rtp_udp_server_port = 20001;
+static unsigned short rtcp_udp_server_port = 20002;
 static unsigned short rtsp_port = 554;
 
 enum ab_rtsp_over_method_t {
@@ -53,13 +55,21 @@ typedef struct ab_select_args_t {
 typedef struct ab_rtsp_client_t *ab_rtsp_client_t;
 struct ab_rtsp_client_t {
     ab_socket_t sock;
+    ab_socket_t rtp_sock;
+
     int status;
     int method;
+
+    unsigned short rtp_chn_port;
+    unsigned short rtcp_chn_port;
 };
 
 struct T {
-    ab_tcp_server_t srv;
+    ab_tcp_server_t tcp_srv;
     list_t clients;
+
+    ab_udp_server_t udp_rtp_srv;
+    ab_udp_server_t udp_rtcp_srv;
 
     bool quit;
     pthread_mutex_t mutex;
@@ -71,7 +81,7 @@ struct T {
 };
 
 static void get_sock_info(ab_socket_t sock,
-                          char *buf, unsigned int buf_size) {
+    char *buf, unsigned int buf_size) {
     char addr_buf[64];
     unsigned short port = 0;
 
@@ -83,58 +93,58 @@ static void get_sock_info(ab_socket_t sock,
 }
 
 static int handle_cmd_options(char *buf, unsigned int buf_size,
-                              unsigned int cseq) {
-    snprintf(buf, buf_size, "RTSP/1.0 200 OK\r\n"
-                            "CSeq: %u\r\n"
-                            "Public: OPTIONS, DESCRIBE, SETUP, "
-                            "PLAY, TEARDOWN\r\n\r\n",
-                            cseq);
+        unsigned int cseq) {
+    snprintf(buf, buf_size, 
+        "RTSP/1.0 200 OK\r\n"
+        "CSeq: %u\r\n"
+        "Public: OPTIONS, DESCRIBE, SETUP, "
+        "PLAY, TEARDOWN\r\n\r\n", cseq);
     return strlen(buf);
 }
 
 static int handle_cmd_describe(char *buf, unsigned int buf_size,
-                               const char *url, unsigned int cseq) {
+    const char *url, unsigned int cseq) {
     char sdp[256];
     char local_ip[32];
     sscanf(url, "rtsp://%[^:]:", local_ip);
 
-    snprintf(sdp, sizeof(sdp), "v=0\r\n"
-                               "o=- 9%ld 1 IN IP4 %s\r\n"
-                               "t=0 0\r\n"
-                               "a=control:*\r\n"
-                               "m=video 0 RTP/AVP 96\r\n"
-                               "a=rtpmap:96 H264/90000\r\n"
-                               "a=control:track0\r\n",
-                               time(NULL), local_ip);
+    snprintf(sdp, sizeof(sdp), 
+        "v=0\r\n"
+        "o=- 9%ld 1 IN IP4 %s\r\n"
+        "t=0 0\r\n"
+        "a=control:*\r\n"
+        "m=video 0 RTP/AVP 96\r\n"
+        "a=rtpmap:96 H264/90000\r\n"
+        "a=control:track0\r\n", time(NULL), local_ip);
 
-    snprintf(buf, buf_size, "RTSP/1.0 200 OK\r\n"
-                            "CSeq: %u\r\n"
-                            "Content-Base: %s\r\n"
-                            "Content-type: application/sdp\r\n"
-                            "Content-length: %lu\r\n\r\n"
-                            "%s",
-                            cseq, url, strlen(sdp), sdp);
+    snprintf(buf, buf_size, 
+        "RTSP/1.0 200 OK\r\n"
+        "CSeq: %u\r\n"
+        "Content-Base: %s\r\n"
+        "Content-type: application/sdp\r\n"
+        "Content-length: %lu\r\n\r\n"
+        "%s", cseq, url, strlen(sdp), sdp);
     return strlen(buf);
 }
 
 static int handle_cmd_setup(char *buf, unsigned int buf_size,
-                            unsigned int cseq, int rtsp_over,
-                            unsigned short rtp, unsigned short rtcp) {
+    unsigned int cseq, int rtsp_over,
+    unsigned short rtp, unsigned short rtcp) {
    if (AB_RTSP_OVER_UDP == rtsp_over) {
-       snprintf(buf, buf_size, "RTSP/1.0 200 OK\r\n"
-                               "CSeq: %u\r\n"
-                               "Transport: RTP/AVP;unicast;"
-                               "client_port=%u-%u;server_port=%u-%u\r\n"
-                               "Session: 66334873\r\n\r\n",
-                               cseq, rtp, rtcp,
-                               rtp_server_port, rtcp_server_port);
+        snprintf(buf, buf_size, 
+            "RTSP/1.0 200 OK\r\n"
+            "CSeq: %u\r\n"
+            "Transport: RTP/AVP;unicast;"
+            "client_port=%u-%u;server_port=%u-%u\r\n"
+            "Session: 66334873\r\n\r\n",
+            cseq, rtp, rtcp, rtp_udp_server_port, rtcp_udp_server_port);
    } else if (AB_RTSP_OVER_TCP == rtsp_over) {
-       snprintf(buf, buf_size, "RTSP/1.0 200 OK\r\n"
-                               "CSeq: %u\r\n"
-                               "Transport: RTP/AVP/TCP;unicast;"
-                               "interleaved=%u-%u\r\n"
-                               "Session: 66334873\r\n\r\n",
-                               cseq, rtp, rtcp);
+        snprintf(buf, buf_size, 
+            "RTSP/1.0 200 OK\r\n"
+            "CSeq: %u\r\n"
+            "Transport: RTP/AVP/TCP;unicast;"
+            "interleaved=%u-%u\r\n"
+            "Session: 66334873\r\n\r\n", cseq, rtp, rtcp);
     } else {
         buf[0] = '\0';
     }
@@ -143,17 +153,17 @@ static int handle_cmd_setup(char *buf, unsigned int buf_size,
 }
 
 static int handle_cmd_play(char *buf, unsigned int buf_size,
-                           unsigned int cseq) {
-    snprintf(buf, buf_size, "RTSP/1.0 200 OK\r\n"
-                            "CSeq: %u\r\n"
-                            "Range: npt=0.000-\r\n"
-                            "Session: 66334873; timeout=60\r\n\r\n",
-                            cseq);
+    unsigned int cseq) {
+    snprintf(buf, buf_size, 
+        "RTSP/1.0 200 OK\r\n"
+        "CSeq: %u\r\n"
+        "Range: npt=0.000-\r\n"
+        "Session: 66334873; timeout=60\r\n\r\n", cseq);
     return strlen(buf);
 }
 
-static int handle_cmd_not_supported(char *buf, unsigned int buf_size,
-                                    unsigned int cseq) {
+static int handle_cmd_teardown(char *buf, unsigned int buf_size, 
+    unsigned int cseq) {
     snprintf(buf, buf_size,
             "RTSP/1.0 551 Option not supported\r\n"
             "CSeq: %u\r\n"
@@ -161,9 +171,18 @@ static int handle_cmd_not_supported(char *buf, unsigned int buf_size,
     return strlen(buf);
 }
 
-static int process_client_request(ab_rtsp_client_t client,
-                                  const char *request, unsigned int request_len,
-                                  char *response, unsigned int response_size) {
+static int handle_cmd_not_supported(char *buf, unsigned int buf_size,
+    unsigned int cseq) {
+    snprintf(buf, buf_size,
+            "RTSP/1.0 551 Option not supported\r\n"
+            "CSeq: %u\r\n"
+            "Session: 66334873\r\n\r\n", cseq);
+    return strlen(buf);
+}
+
+static int process_client_request(ab_rtsp_client_t client, 
+    const char *request, unsigned int request_len, 
+    char *response, unsigned int response_size) {
     char method[16];
     char url[128];
     char version[16];
@@ -181,12 +200,11 @@ static int process_client_request(ab_rtsp_client_t client,
         sscanf(line, "CSeq: %u\r\n", &cseq);
 
     int len = 0;
-    if (strcmp(method, "OPTIONS") == 0)
+    if (strcmp(method, "OPTIONS") == 0) {
         len = handle_cmd_options(response, response_size, cseq);
-    else if (strcmp(method, "DESCRIBE") == 0)
+    } else if (strcmp(method, "DESCRIBE") == 0) {
         len = handle_cmd_describe(response, response_size, url, cseq);
-    else if (strcmp(method, "SETUP") == 0) {
-        unsigned short rtp_port = 0, rtcp_port = 1;
+    } else if (strcmp(method, "SETUP") == 0) {
         line = strstr(request, "Transport");
 
         if (strstr(line, "RTP/AVP/TCP") != NULL)
@@ -197,19 +215,20 @@ static int process_client_request(ab_rtsp_client_t client,
             return 0;
 
         if (AB_RTSP_OVER_UDP == client->method)
-            sscanf(line, "Transport: RTP/AVP;unicast;client_port=%hu-%hu\r\n",
-                         &rtp_port, &rtcp_port);
+            sscanf(line, "Transport: RTP/AVP;unicast;client_port=%hu-%hu\r\n", 
+                &client->rtp_chn_port, &client->rtcp_chn_port);
         else if (AB_RTSP_OVER_TCP == client->method)
-            sscanf(line, "Transport: RTP/AVP/TCP;unicast;interleaved=%hu-%hu\r\n",
-                         &rtp_port, &rtcp_port);
+            sscanf(line, "Transport: RTP/AVP/TCP;unicast;interleaved=%hu-%hu\r\n", 
+                &client->rtp_chn_port, &client->rtcp_chn_port);
 
-        len = handle_cmd_setup(response, response_size, cseq,
-                                client->method, rtp_port, rtcp_port);
+        len = handle_cmd_setup(response, response_size, cseq, client->method, 
+            client->rtp_chn_port, client->rtcp_chn_port);
     } else if (strcmp(method, "PLAY") == 0) {
         len = handle_cmd_play(response, response_size, cseq);
         client->status = 1;
-    } else
+    } else {
         len = handle_cmd_not_supported(response, response_size, cseq);
+    }
 
     return len;
 }
@@ -219,10 +238,9 @@ static void recv_client_msg(ab_rtsp_client_t client) {
 
     char request[4096];
     memset(request, 0, sizeof(request));
-    int nread = ab_socket_recv(client->sock, request, sizeof(request));
+    int nread = ab_socket_recv(client->sock, (unsigned char *) request, sizeof(request));
     if (nread < 0) {
         AB_LOGGER_ERROR("return %d.\n", nread);
-        ab_socket_free(&client->sock);
     } else if (0 == nread) {
         char sock_info[64];
         memset(sock_info, 0, sizeof(sock_info));
@@ -236,10 +254,9 @@ static void recv_client_msg(ab_rtsp_client_t client) {
         memset(response, 0, response_size);
         int len = process_client_request(client, request, nread,
             response, response_size);
-
         AB_LOGGER_DEBUG("response:\n%s\n", response);
         if (len > 0)
-            ab_socket_send(client->sock, response, len);
+            ab_socket_send(client->sock, (unsigned char *) response, len);
     }
 }
 
@@ -331,7 +348,7 @@ static void *rtsp_event_start_routine(void *arg) {
     return NULL;
 }
 
-static void accept_func(ab_socket_t sock, void *user_data) {
+static void accept_func(void *sock, void *user_data) {
     assert(sock);
     assert(user_data);
 
@@ -362,10 +379,12 @@ static void rtp_sender_apply(void **x, void *user_data) {
     ab_rtsp_buffer_t *buf = (ab_rtsp_buffer_t *) user_data;
 
     if (client->status) {
-        if (AB_RTSP_OVER_UDP == client->method)
-            ab_socket_udp_send(client->sock, NULL, 0,
+        if (AB_RTSP_OVER_UDP == client->method) {
+            char addr_buf[32];
+            ab_socket_addr(client->sock, addr_buf, sizeof(addr_buf));
+            ab_socket_udp_send(client->rtp_sock, addr_buf, client->rtp_chn_port,
                 buf->data + 4, buf->used - 4);
-        else if (AB_RTSP_OVER_TCP == client->method)
+        } else if (AB_RTSP_OVER_TCP == client->method)
             ab_socket_send(client->sock, buf->data, buf->used);
     }
 }
@@ -507,7 +526,10 @@ T ab_rtsp_new() {
     NEW(rtsp);
     assert(rtsp);
 
-    rtsp->srv = ab_tcp_server_new(rtsp_port, accept_func, rtsp);
+    rtsp->tcp_srv = ab_tcp_server_new(rtsp_port, accept_func, rtsp);
+
+    rtsp->udp_rtp_srv = ab_udp_server_new(rtp_udp_server_port);
+    rtsp->udp_rtcp_srv = ab_udp_server_new(rtcp_udp_server_port);
 
     rtsp->clients = NULL;
 
@@ -556,7 +578,9 @@ void ab_rtsp_free(T *rtsp) {
         FREE(client);
     }
 
-    ab_tcp_server_free(&(*rtsp)->srv);
+    ab_udp_server_free(&(*rtsp)->udp_rtcp_srv);
+    ab_udp_server_free(&(*rtsp)->udp_rtp_srv);
+    ab_tcp_server_free(&(*rtsp)->tcp_srv);
 
     FREE(*rtsp);
 }

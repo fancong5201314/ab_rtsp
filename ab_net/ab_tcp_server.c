@@ -7,6 +7,8 @@
 
 #include "ab_tcp_server.h"
 
+#include "ab_socket.h"
+
 #include "ab_base/ab_assert.h"
 #include "ab_base/ab_mem.h"
 
@@ -23,7 +25,7 @@
 
 struct T {
     ab_socket_t sock;
-    void (*new_conn_cb)(ab_socket_t, void*);
+    void (*new_conn_cb)(void *sock, void *user_data);
     void *user_data;
     bool quit;
     pthread_t acceptor_thd;
@@ -34,7 +36,7 @@ struct T {
 static void *accept_event_loop_func(void *arg);
 
 T ab_tcp_server_new(unsigned short port,
-        void new_connection_cb(ab_socket_t, void *), void *user_data) {
+    void new_conn_cb(void *sock, void *user_data), void *user_data) {
     assert(port != 0);
 
     T tcp_server;
@@ -51,7 +53,7 @@ T ab_tcp_server_new(unsigned short port,
     ret = ab_socket_listen(tcp_server->sock, 10);
     assert(0 == ret);
 
-    tcp_server->new_conn_cb = new_connection_cb;
+    tcp_server->new_conn_cb = new_conn_cb;
     tcp_server->user_data = user_data;
 
     tcp_server->error_num = 0;

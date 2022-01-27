@@ -160,7 +160,7 @@ T ab_socket_accept(T sock) {
     return NULL;
 }
 
-int ab_socket_send(T sock, const char *data, unsigned int data_len) {
+int ab_socket_send(T sock, const unsigned char *data, unsigned int data_len) {
     assert(sock);
     if (sock->fd <= 0)
         return -1;
@@ -174,7 +174,7 @@ int ab_socket_send(T sock, const char *data, unsigned int data_len) {
     return -1;
 }
 
-int ab_socket_recv(T sock, char *buf, unsigned int buf_size) {
+int ab_socket_recv(T sock, unsigned char *buf, unsigned int buf_size) {
     assert(sock);
     assert(sock->fd > 0);
     assert(buf && buf_size > 0);
@@ -186,7 +186,7 @@ int ab_socket_recv(T sock, char *buf, unsigned int buf_size) {
 }
 
 int ab_socket_udp_send(T sock, const char *to_addr, unsigned short to_port,
-        const char *data, unsigned int data_len) {
+        const unsigned char *data, unsigned int data_len) {
     assert(sock);
     assert(sock->fd > 0);
     assert(data && data_len > 0);
@@ -198,7 +198,7 @@ int ab_socket_udp_send(T sock, const char *to_addr, unsigned short to_port,
 }
 
 int ab_socket_udp_recv(T sock, char *from_addr_buf, unsigned int addr_buf_size,
-        unsigned short *from_port, char *buf, unsigned int buf_size) {
+        unsigned short *from_port, unsigned char *buf, unsigned int buf_size) {
     assert(sock);
     assert(sock->fd > 0);
     assert(buf && buf_size > 0);
