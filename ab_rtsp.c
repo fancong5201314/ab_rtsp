@@ -265,10 +265,10 @@ static void check_rtsp_event(void **x, void *user_data) {
     assert(user_data);
 
     ab_rtsp_client_t client = (ab_rtsp_client_t) *x;
-    ab_select_args_t *slt_args = (ab_select_args_t *) user_data;
+    fd_set *rfds = (fd_set *) user_data;
 
     int fd = ab_socket_fd(client->sock);
-    if (FD_ISSET(fd, &slt_args->rfds))
+    if (FD_ISSET(fd, rfds))
         recv_client_msg(client);
 }
 
@@ -285,7 +285,7 @@ static void fill_set(void **x, void *user_data) {
         slt_args->max_fd = fd;
 }
 
-static list_t clients_clean_up(list_t head) {
+static list_t update_clients(list_t head) {
     while (head) {
         ab_rtsp_client_t client = head->first;
         if (NULL == client->sock) {
@@ -339,8 +339,8 @@ static void *rtsp_event_start_routine(void *arg) {
                 continue;
 
             pthread_mutex_lock(&rtsp->mutex);
-            list_map(rtsp->clients, check_rtsp_event, &slt_args);
-            rtsp->clients = clients_clean_up(rtsp->clients);
+            list_map(rtsp->clients, check_rtsp_event, &slt_args.rfds);
+            rtsp->clients = update_clients(rtsp->clients);
             pthread_mutex_unlock(&rtsp->mutex);
         }
     }
