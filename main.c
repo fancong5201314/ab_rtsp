@@ -27,7 +27,7 @@ int main(int argc, char *argv[]) {
     ab_logger_init(AB_LOGGER_OUTPUT_TO_STDOUT, ".", "log", 100, 1024 * 1024);
     AB_LOGGER_INFO("startup.\n");
 
-    ab_rtsp_t rtsp = ab_rtsp_new(AB_RTSP_OVER_TCP);
+    ab_rtsp_t rtsp = ab_rtsp_new();
 
     AB_LOGGER_INFO("RTSP server startup.\n");
 

@@ -33,6 +33,12 @@ static unsigned short rtp_server_port = 20001;
 static unsigned short rtcp_server_port = 20002;
 static unsigned short rtsp_port = 554;
 
+enum ab_rtsp_over_method_t {
+    AB_RTSP_OVER_NONE = 0,
+    AB_RTSP_OVER_TCP,
+    AB_RTSP_OVER_UDP
+};
+
 typedef struct ab_rtsp_buffer_t {
     void *data;
     int size;

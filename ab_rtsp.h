@@ -15,12 +15,6 @@ extern "C" {
 #define T ab_rtsp_t
 typedef struct T *T;
 
-enum ab_rtsp_over_method_t {
-    AB_RTSP_OVER_NONE = 0,
-    AB_RTSP_OVER_TCP,
-    AB_RTSP_OVER_UDP
-};
-
 extern T    ab_rtsp_new();
 extern void ab_rtsp_free(T *rtsp);
 
