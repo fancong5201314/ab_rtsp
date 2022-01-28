@@ -34,12 +34,6 @@ typedef struct ab_rtp_header_t {
     uint32_t ssrc;
 } ab_rtp_header_t;
 
-typedef struct ab_rtp_packet_t {
-    uint8_t header[4];
-    ab_rtp_header_t rtp_header;
-    uint8_t payload[0];
-} ab_rtp_packet_t;
-
 #ifdef __cplusplus
 }
 #endif
