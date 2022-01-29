@@ -421,7 +421,7 @@ void rtp_send_nalu(T rtsp,
         rtsp->timestamp += 90000 / 25;
 }
 
-static list_t update_clients(list_t head) {
+static list_t update_clients_list(list_t head) {
     while (head) {
         ab_rtsp_client_t *client = head->first;
         if (NULL == client->sock) {
@@ -670,7 +670,7 @@ void *event_looper_cb(void *arg) {
                     recv_client_msg(rtsp_client);
                 client = client->rest;
             }
-            rtsp->clients = update_clients(rtsp->clients);
+            rtsp->clients = update_clients_list(rtsp->clients);
             pthread_mutex_unlock(&rtsp->mutex);
         }
     }
