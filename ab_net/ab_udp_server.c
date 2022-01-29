@@ -12,11 +12,11 @@ struct T {
     ab_socket_t sock;
 };
 
-T    ab_udp_server_new(unsigned short port) {
+T ab_udp_server_new(unsigned short port) {
     T udp_server;
     NEW(udp_server);
 
-    udp_server->sock = ab_socket_new(AB_SOCKET_TCP_INET);
+    udp_server->sock = ab_socket_new(AB_SOCKET_UDP_INET);
     assert(udp_server->sock);
 
     ab_socket_reuse_addr(udp_server->sock);
