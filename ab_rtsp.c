@@ -26,14 +26,11 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <errno.h>
 
 #include <arpa/inet.h>
 
 #define T ab_rtsp_t
-
-static unsigned short rtp_udp_server_port   = 20001;
-static unsigned short rtcp_udp_server_port  = 20002;
-static unsigned short rtsp_port             = 554;
 
 enum ab_rtsp_over_method_t {
     AB_RTSP_OVER_NONE = 0,
@@ -49,13 +46,12 @@ typedef struct ab_rtsp_interleaved_frame_t {
 } ab_rtsp_interleaved_frame_t;
 
 typedef struct ab_buffer_t {
-    void           *data;
+    unsigned char  *data;
     int             size;
     int             used;
 } ab_buffer_t;
 
-typedef struct ab_rtsp_client_t *ab_rtsp_client_t;
-struct ab_rtsp_client_t {
+typedef struct ab_rtsp_client_t {
     ab_socket_t     sock;
 
     bool            ready;              // 准备就绪为true（收到play)，否则为false
@@ -63,14 +59,14 @@ struct ab_rtsp_client_t {
 
     unsigned short  rtp_chn_port;
     unsigned short  rtcp_chn_port;
-};
+} ab_rtsp_client_t;
 
 struct T {
-    ab_tcp_server_t tcp_srv;
+    ab_tcp_server_t rtsp_tcp_srv;
     list_t          clients;
 
-    ab_udp_server_t udp_rtp_srv;
-    ab_udp_server_t udp_rtcp_srv;
+    ab_udp_server_t rtp_udp_srv;
+    ab_udp_server_t rtcp_udp_srv;
 
     pthread_mutex_t mutex;
 
@@ -80,7 +76,8 @@ struct T {
     uint16_t        sequence;
     uint32_t        timestamp;
 
-    ab_buffer_t cache;
+    ab_buffer_t     cache;
+    ab_buffer_t     rtp_buffer;
 };
 
 static bool start_code3(const unsigned char *data, unsigned int data_size);
@@ -99,17 +96,21 @@ static void fill_rtp_header(ab_rtp_header_t *rtp_header,
     unsigned int seq, unsigned int timestamp);
 
 static void rtp_send_nalu(T rtsp, 
-    const char *data, unsigned int data_size);
+    const unsigned char *nalu, unsigned int nalu_len);
 
-T ab_rtsp_new() {
+T ab_rtsp_new(unsigned short port) {
+    const unsigned int data_cache_size          = 1024 * 1024;
+    const unsigned int rtp_buffer_size          = 1400;
+
+
     T rtsp;
     NEW(rtsp);
     assert(rtsp);
 
-    rtsp->tcp_srv       = ab_tcp_server_new(rtsp_port, accept_func, rtsp);
+    rtsp->rtsp_tcp_srv  = ab_tcp_server_new(port, accept_func, rtsp);
 
-    rtsp->udp_rtp_srv   = ab_udp_server_new(rtp_udp_server_port);
-    rtsp->udp_rtcp_srv  = ab_udp_server_new(rtcp_udp_server_port);
+    rtsp->rtp_udp_srv   = ab_udp_server_new(RTP_SERVER_PORT);
+    rtsp->rtcp_udp_srv  = ab_udp_server_new(RTCP_SERVER_PORT);
 
     rtsp->clients       = NULL;
 
@@ -121,9 +122,13 @@ T ab_rtsp_new() {
     rtsp->sequence      = 0;
     rtsp->timestamp     = 0;
 
-    rtsp->cache.size    = 1024 * 1024;
+    rtsp->cache.size    = data_cache_size;
     rtsp->cache.used    = 0;
     rtsp->cache.data    = ALLOC(rtsp->cache.size);
+
+    rtsp->rtp_buffer.size   = rtp_buffer_size;
+    rtsp->rtp_buffer.used   = 0;
+    rtsp->rtp_buffer.data   = ALLOC(rtsp->rtp_buffer.size);
 
     return rtsp;
 }
@@ -131,6 +136,7 @@ T ab_rtsp_new() {
 void ab_rtsp_free(T *rtsp) {
     assert(rtsp && *rtsp);
 
+    FREE((*rtsp)->rtp_buffer.data);
     FREE((*rtsp)->cache.data);
 
     (*rtsp)->quit = true;
@@ -139,15 +145,15 @@ void ab_rtsp_free(T *rtsp) {
     pthread_mutex_destroy(&(*rtsp)->mutex);
 
     while ((*rtsp)->clients) {
-        ab_rtsp_client_t client;
+        ab_rtsp_client_t *client;
         (*rtsp)->clients = list_pop((*rtsp)->clients, (void **) &client);
         ab_socket_free(&(client->sock));
         FREE(client);
     }
 
-    ab_udp_server_free(&(*rtsp)->udp_rtcp_srv);
-    ab_udp_server_free(&(*rtsp)->udp_rtp_srv);
-    ab_tcp_server_free(&(*rtsp)->tcp_srv);
+    ab_udp_server_free(&(*rtsp)->rtcp_udp_srv);
+    ab_udp_server_free(&(*rtsp)->rtp_udp_srv);
+    ab_tcp_server_free(&(*rtsp)->rtsp_tcp_srv);
 
     FREE(*rtsp);
 }
@@ -265,7 +271,7 @@ void accept_func(void *sock, void *user_data) {
 
     T rtsp = (T) user_data;
 
-    ab_rtsp_client_t new_client;
+    ab_rtsp_client_t *new_client;
     NEW(new_client);
 
     new_client->sock    = sock;
@@ -301,7 +307,7 @@ int find_start_code(const unsigned char *data, unsigned int data_size) {
         return -1;
 
     unsigned int i;
-    for (i = 0; i < data_size - 4; i++)
+    for (i = 0; i < data_size - 4; ++i)
         if (start_code3(data + i, 3) || start_code4(data + i, 4))
             break;
 
@@ -314,108 +320,110 @@ static void send_rtp_to_client(list_t clients, ab_udp_server_t rtp_udp_srv,
     const unsigned char *data, unsigned int data_len) {
     list_t node = clients;
     while(node) {
-        ab_rtsp_client_t rtsp_client = node->first;
+        ab_rtsp_client_t *rtsp_client = node->first;
         if (rtsp_client->ready && rtsp_client->sock) {
             if (AB_RTSP_OVER_UDP == rtsp_client->method) {
                 char addr_buf[32];
-                ab_socket_addr(rtsp_client->sock, addr_buf, sizeof(addr_buf));
+                ab_socket_addr(rtsp_client->sock, 
+                    addr_buf, sizeof(addr_buf));
                 ab_udp_server_send(rtp_udp_srv, 
                     addr_buf, rtsp_client->rtp_chn_port,
                     data + sizeof(ab_rtsp_interleaved_frame_t), 
                     data_len - sizeof(ab_rtsp_interleaved_frame_t));
-            } else if (AB_RTSP_OVER_TCP == rtsp_client->method)
-                ab_socket_send(rtsp_client->sock, data, data_len);
+            } else if (AB_RTSP_OVER_TCP == rtsp_client->method) {
+                int nsend = ab_socket_send(rtsp_client->sock, data, data_len);
+                if (nsend != data_len)
+                    AB_LOGGER_DEBUG("ab_socket_send error.\n");
+            }
         }
         node = node->rest;
     }
 }
 
-void rtp_send_nalu(T rtsp, 
-    const char *nalu, unsigned int nalu_size) {
-    assert(rtsp);
-    assert(nalu);
-    assert(nalu_size > 0);
+static void set_slice_header(unsigned char *slice_header, int nalu_type,
+    int slice_total, int slice_index) {
+    slice_header[0] = (nalu_type & 0x60) | 0x1c;
+    slice_header[1] = nalu_type & 0x1f;
 
-    const unsigned int buffer_size = RTP_MAX_SIZE + 
-        sizeof(ab_rtsp_interleaved_frame_t) + 
-        sizeof(ab_rtp_header_t) + 2;
-    unsigned char buffer[buffer_size];
-    unsigned int buffer_used;
+    if (0 == slice_index)
+        slice_header[1] |= 0x80;
+    else if (slice_total - 1 == slice_index)
+        slice_header[1] |= 0x40;
+}
+
+void rtp_send_nalu(T rtsp, 
+    const unsigned char *nalu, unsigned int nalu_len) {
+    assert(rtsp);
+    assert(nalu && nalu_len > 0);
 
     int nalu_type = nalu[0];
-    if (nalu_size < RTP_MAX_SIZE) {
+    if (nalu_len < RTP_MAX_SIZE) {
         fill_rtsp_interleave_frame(
-            (ab_rtsp_interleaved_frame_t *) buffer,
-            sizeof(ab_rtp_header_t) + nalu_size);
-        buffer_used = sizeof(ab_rtsp_interleaved_frame_t);
+            (ab_rtsp_interleaved_frame_t *) rtsp->rtp_buffer.data,
+            sizeof(ab_rtp_header_t) + nalu_len);
+        rtsp->rtp_buffer.used = sizeof(ab_rtsp_interleaved_frame_t);
 
         fill_rtp_header(
-            (ab_rtp_header_t *) (buffer + buffer_used), 
+            (ab_rtp_header_t *) (rtsp->rtp_buffer.data + rtsp->rtp_buffer.used), 
             rtsp->sequence, rtsp->timestamp);
-        buffer_used += sizeof(ab_rtp_header_t);
+        rtsp->rtp_buffer.used += sizeof(ab_rtp_header_t);
 
-        memcpy(buffer + buffer_used, nalu, nalu_size);
-        buffer_used += nalu_size;
+        memcpy(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used, nalu, nalu_len);
+        rtsp->rtp_buffer.used += nalu_len;
 
         pthread_mutex_lock(&rtsp->mutex);
-        send_rtp_to_client(rtsp->clients, rtsp->udp_rtp_srv, 
-            buffer, buffer_used);
+        send_rtp_to_client(rtsp->clients, rtsp->rtp_udp_srv, 
+            rtsp->rtp_buffer.data, rtsp->rtp_buffer.used);
         pthread_mutex_unlock(&rtsp->mutex);
 
         ++rtsp->sequence;
     } else {
-        int pkt_num = (nalu_size - 1) / RTP_MAX_SIZE;
-        int remain = (nalu_size - 1) % RTP_MAX_SIZE;
+        int slice_num = (nalu_len - 1) / RTP_MAX_SIZE;
+        int remain = (nalu_len - 1) % RTP_MAX_SIZE;
         if (remain)
-            pkt_num++;
+            ++slice_num;
 
-        for (int i = 0; i < pkt_num; i++) {
+        for (int i = 0; i < slice_num; ++i) {
             unsigned int pkg_data_len = 0;
-            if (i < pkt_num - 1 || 0 == remain) 
+            if (i < slice_num - 1 || 0 == remain) 
                 pkg_data_len = RTP_MAX_SIZE;
             else
                 pkg_data_len = remain;
 
             fill_rtsp_interleave_frame(
-                (ab_rtsp_interleaved_frame_t *) buffer,
+                (ab_rtsp_interleaved_frame_t *) rtsp->rtp_buffer.data,
                 pkg_data_len + sizeof(ab_rtp_header_t) + 2);
-            buffer_used = sizeof(ab_rtsp_interleaved_frame_t);
+            rtsp->rtp_buffer.used = sizeof(ab_rtsp_interleaved_frame_t);
 
             fill_rtp_header(
-                (ab_rtp_header_t *) (buffer + buffer_used), 
+                (ab_rtp_header_t *) (rtsp->rtp_buffer.data + rtsp->rtp_buffer.used), 
                 rtsp->sequence, rtsp->timestamp);
-            buffer_used += sizeof(ab_rtp_header_t);
+            rtsp->rtp_buffer.used += sizeof(ab_rtp_header_t);
 
-            buffer[buffer_used] = (nalu_type & 0x60) | 0x1c;
-            buffer[buffer_used + 1] = nalu_type & 0x1f;
+            set_slice_header(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used,
+                nalu_type, slice_num, i);
+            rtsp->rtp_buffer.used += 2;
 
-            if (0 == i)
-                buffer[buffer_used + 1] |= 0x80;
-            else if (pkt_num - 1 == i)
-                buffer[buffer_used + 1] |= 0x40;
-
-            buffer_used += 2;
-
-            memcpy(buffer + buffer_used, nalu + i * RTP_MAX_SIZE + 1, pkg_data_len);
-            buffer_used += pkg_data_len;
+            memcpy(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used, 
+                nalu + i * RTP_MAX_SIZE + 1, pkg_data_len);
+            rtsp->rtp_buffer.used += pkg_data_len;
 
             pthread_mutex_lock(&rtsp->mutex);
-            send_rtp_to_client(rtsp->clients, rtsp->udp_rtp_srv, 
-                buffer, buffer_used);
+            send_rtp_to_client(rtsp->clients, rtsp->rtp_udp_srv, 
+                rtsp->rtp_buffer.data, rtsp->rtp_buffer.used);
             pthread_mutex_unlock(&rtsp->mutex);
 
             ++rtsp->sequence;
         }
     }
 
-    if ((nalu_type & 0x1f) != 7 && (nalu_type & 0x1f) != 8) {
+    if ((nalu_type & 0x1f) != 7 && (nalu_type & 0x1f) != 8)
         rtsp->timestamp += 90000 / 25;
-    }
 }
 
 static list_t update_clients(list_t head) {
     while (head) {
-        ab_rtsp_client_t client = head->first;
+        ab_rtsp_client_t *client = head->first;
         if (NULL == client->sock) {
             list_t del_node = head;
             head = head->rest;
@@ -427,7 +435,7 @@ static list_t update_clients(list_t head) {
 
     list_t result = head;
     while (head && head->rest) {
-        ab_rtsp_client_t client = head->rest->first;
+        ab_rtsp_client_t *client = head->rest->first;
         if (NULL == client->sock) {
             list_t del_node = head->rest;
             head->rest = head->rest->rest;
@@ -477,7 +485,7 @@ static int handle_cmd_describe(char *buf, unsigned int buf_size,
 
 static int handle_cmd_setup(char *buf, unsigned int buf_size,
     unsigned int cseq, int rtsp_over,
-    unsigned short rtp, unsigned short rtcp) {
+    unsigned short rtp_client_port, unsigned short rtcp_client_port) {
    if (AB_RTSP_OVER_UDP == rtsp_over) {
         snprintf(buf, buf_size, 
             "RTSP/1.0 200 OK\r\n"
@@ -485,14 +493,16 @@ static int handle_cmd_setup(char *buf, unsigned int buf_size,
             "Transport: RTP/AVP;unicast;"
             "client_port=%u-%u;server_port=%u-%u\r\n"
             "Session: 66334873\r\n\r\n",
-            cseq, rtp, rtcp, rtp_udp_server_port, rtcp_udp_server_port);
+            cseq, rtp_client_port, rtcp_client_port, 
+            RTP_SERVER_PORT, RTCP_SERVER_PORT);
    } else if (AB_RTSP_OVER_TCP == rtsp_over) {
         snprintf(buf, buf_size, 
             "RTSP/1.0 200 OK\r\n"
             "CSeq: %u\r\n"
             "Transport: RTP/AVP/TCP;unicast;"
             "interleaved=%u-%u\r\n"
-            "Session: 66334873\r\n\r\n", cseq, rtp, rtcp);
+            "Session: 66334873\r\n\r\n", 
+            cseq, rtp_client_port, rtcp_client_port);
     } else {
         buf[0] = '\0';
     }
@@ -513,7 +523,7 @@ static int handle_cmd_play(char *buf, unsigned int buf_size,
 static int handle_cmd_teardown(char *buf, unsigned int buf_size, 
     unsigned int cseq) {
     snprintf(buf, buf_size,
-            "RTSP/1.0 551 Option not supported\r\n"
+            "RTSP/1.0 200 OK\r\n"
             "CSeq: %u\r\n"
             "Session: 66334873\r\n\r\n", cseq);
     return strlen(buf);
@@ -528,7 +538,7 @@ static int handle_cmd_not_supported(char *buf, unsigned int buf_size,
     return strlen(buf);
 }
 
-static int process_client_request(ab_rtsp_client_t client, 
+static int process_client_request(ab_rtsp_client_t *client, 
     const char *request, unsigned int request_len, 
     char *response, unsigned int response_size) {
     char method[16];
@@ -575,6 +585,11 @@ static int process_client_request(ab_rtsp_client_t client,
     } else if (strcmp(method, "PLAY") == 0) {
         len = handle_cmd_play(response, response_size, cseq);
         client->ready = true;
+    } else if (strcmp(method, "TEARDOWN") == 0) {
+        // IINA测试响应TEARDOWN会收到SIGPIPE信号，导致程序异常退出
+        // len = handle_cmd_teardown(response, response_size, cseq);
+        len = 0;
+        client->ready = false;
     } else {
         len = handle_cmd_not_supported(response, response_size, cseq);
     }
@@ -582,14 +597,14 @@ static int process_client_request(ab_rtsp_client_t client,
     return len;
 }
 
-static void recv_client_msg(ab_rtsp_client_t client) {
+static void recv_client_msg(ab_rtsp_client_t *client) {
     assert(client);
 
     char request[4096];
     memset(request, 0, sizeof(request));
     int nread = ab_socket_recv(client->sock, (unsigned char *) request, sizeof(request));
     if (nread < 0) {
-        AB_LOGGER_ERROR("return %d.\n", nread);
+        AB_LOGGER_ERROR("return %d, %s.\n", nread, strerror(errno));
     } else if (0 == nread) {
         char sock_info[64];
         memset(sock_info, 0, sizeof(sock_info));
@@ -604,8 +619,11 @@ static void recv_client_msg(ab_rtsp_client_t client) {
         int len = process_client_request(client, request, nread,
             response, response_size);
         AB_LOGGER_DEBUG("response:\n%s\n", response);
-        if (len > 0)
-            ab_socket_send(client->sock, (unsigned char *) response, len);
+        if (len > 0) {
+            int nsend = ab_socket_send(client->sock, (unsigned char *) response, len);
+            if (nsend != len)
+                AB_LOGGER_DEBUG("ab_socket_send error.\n");
+        }
     }
 }
 
@@ -622,7 +640,7 @@ void *event_looper_cb(void *arg) {
         pthread_mutex_lock(&rtsp->mutex);
         list_t client = rtsp->clients;
         while (client) {
-            ab_rtsp_client_t rtsp_client = client->first;
+            ab_rtsp_client_t *rtsp_client = client->first;
             int fd = ab_socket_fd(rtsp_client->sock);
             FD_SET(fd, &rfds);
             if (fd > max_fd)
@@ -646,7 +664,7 @@ void *event_looper_cb(void *arg) {
             pthread_mutex_lock(&rtsp->mutex);
             list_t client = rtsp->clients;
             while (client) {
-                ab_rtsp_client_t rtsp_client = client->first;
+                ab_rtsp_client_t *rtsp_client = client->first;
                 int fd = ab_socket_fd(rtsp_client->sock);
                 if (FD_ISSET(fd, &rfds))
                     recv_client_msg(rtsp_client);

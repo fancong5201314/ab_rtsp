@@ -15,7 +15,7 @@ extern "C" {
 #define T ab_rtsp_t
 typedef struct T *T;
 
-extern T    ab_rtsp_new();
+extern T    ab_rtsp_new(unsigned short port);
 extern void ab_rtsp_free(T *rtsp);
 
 extern int  ab_rtsp_send(T rtsp, const char *data, unsigned int data_size);

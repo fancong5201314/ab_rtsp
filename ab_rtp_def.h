@@ -19,6 +19,9 @@ extern "C" {
 #define RTP_PAYLOAD_TYPE_AAC    97
 #define RTP_MAX_SIZE            1370
 
+#define RTP_SERVER_PORT         20001
+#define RTCP_SERVER_PORT        20002
+
 typedef struct ab_rtp_header_t {
     uint8_t csrc_len:4;
     uint8_t extension:1;
