@@ -1,6 +1,6 @@
 .PHONY: all clean
 
-TARGET=demo
+TARGET=stream_push
 
 CC=gcc
 

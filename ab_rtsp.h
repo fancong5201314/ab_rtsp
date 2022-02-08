@@ -15,7 +15,10 @@ extern "C" {
 #define T ab_rtsp_t
 typedef struct T *T;
 
-extern T    ab_rtsp_new(unsigned short port);
+/*
+ * video_codec: 1(H.264)、2(H.265)  
+ */
+extern T    ab_rtsp_new(unsigned short port, int video_codec);
 extern void ab_rtsp_free(T *rtsp);
 
 extern int  ab_rtsp_send(T rtsp, const char *data, unsigned int data_size);

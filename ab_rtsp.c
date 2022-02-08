@@ -38,6 +38,12 @@ enum ab_rtsp_over_method_t {
     AB_RTSP_OVER_UDP
 };
 
+enum ab_video_codec_t {
+    AB_VIDEO_CODEC_NONE = 0,
+    AB_VIDEO_CODEC_H264,
+    AB_VIDEO_CODEC_H265
+};
+
 typedef struct ab_rtsp_interleaved_frame_t {
     uint8_t         dollar_sign;        // '$' or 0x24
     uint8_t         channel_identifier; // 0x00(Video RTP)、0x01(Video RTCP)、
@@ -53,12 +59,14 @@ typedef struct ab_buffer_t {
 
 typedef struct ab_rtsp_client_t {
     ab_socket_t     sock;
+    int             video_codec;        // @ab_video_codec_t
 
     bool            ready;              // 准备就绪为true（收到play)，否则为false
     int             method;
 
     unsigned short  rtp_chn_port;
     unsigned short  rtcp_chn_port;
+
 } ab_rtsp_client_t;
 
 struct T {
@@ -67,6 +75,8 @@ struct T {
 
     ab_udp_server_t rtp_udp_srv;
     ab_udp_server_t rtcp_udp_srv;
+
+    int             video_codec;        // @ab_video_codec_t
 
     pthread_mutex_t mutex;
 
@@ -98,7 +108,7 @@ static void fill_rtp_header(ab_rtp_header_t *rtp_header,
 static void rtp_send_nalu(T rtsp, 
     const unsigned char *nalu, unsigned int nalu_len);
 
-T ab_rtsp_new(unsigned short port) {
+T ab_rtsp_new(unsigned short port, int video_codec) {
     const unsigned int data_cache_size          = 1024 * 1024;
     const unsigned int rtp_buffer_size          = 1400;
 
@@ -111,6 +121,8 @@ T ab_rtsp_new(unsigned short port) {
 
     rtsp->rtp_udp_srv   = ab_udp_server_new(RTP_SERVER_PORT);
     rtsp->rtcp_udp_srv  = ab_udp_server_new(RTCP_SERVER_PORT);
+
+    rtsp->video_codec   = video_codec;
 
     rtsp->clients       = NULL;
 
@@ -161,9 +173,10 @@ void ab_rtsp_free(T *rtsp) {
 int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
     if (NULL == data || 0 == data_size)
         if (rtsp->cache.used > 0) {
-            int first_start_code_pos = find_start_code(rtsp->cache.data, rtsp->cache.used);
+            int first_start_code_pos = find_start_code(
+                rtsp->cache.data, rtsp->cache.used);
             if (0 == first_start_code_pos) {
-                int start_code = 0;
+                unsigned int start_code = 0;
                 if (start_code3(rtsp->cache.data, rtsp->cache.used))
                     start_code = 3;
                 else if (start_code4(rtsp->cache.data, rtsp->cache.used))
@@ -188,20 +201,22 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
 
     unsigned int start_pos = 0;
     while (start_pos < rtsp->cache.used) {
-        int first_start_code_pos =
-            find_start_code(rtsp->cache.data + start_pos, rtsp->cache.used - start_pos);
+        int first_start_code_pos = find_start_code(
+            rtsp->cache.data + start_pos, rtsp->cache.used - start_pos);
         if (0 == first_start_code_pos) {
             unsigned int start_code = 0;
-            if (start_code3(rtsp->cache.data + start_pos, rtsp->cache.used - start_pos))
+            if (start_code3(rtsp->cache.data + start_pos, 
+                rtsp->cache.used - start_pos))
                 start_code = 3;
-            else if (start_code4(rtsp->cache.data + start_pos, rtsp->cache.used - start_pos))
+            else if (start_code4(rtsp->cache.data + start_pos, 
+                rtsp->cache.used - start_pos))
                 start_code = 4;
             else
                 continue;
 
             int next_start_code_pos =
-                find_start_code(rtsp->cache.data + start_pos + start_code,
-                                rtsp->cache.used - start_pos - start_code);
+                find_start_code(rtsp->cache.data + start_pos + start_code, 
+                    rtsp->cache.used - start_pos - start_code);
             if (-1 == next_start_code_pos) {
                 if (start_pos != 0) {
                     rtsp->cache.used -= start_pos;
@@ -235,6 +250,13 @@ static void get_sock_info(ab_socket_t sock,
     }
 }
 
+static void print_sock_info(ab_socket_t sock, const char *msg) {
+    char sock_info[64];
+    memset(sock_info, 0, sizeof(sock_info));
+    get_sock_info(sock, sock_info, sizeof(sock_info));
+    AB_LOGGER_DEBUG("[%s], %s\n", sock_info, msg);
+}
+
 void fill_rtsp_interleave_frame(
     ab_rtsp_interleaved_frame_t *interleaved_frame, 
     unsigned short data_len) {
@@ -264,10 +286,7 @@ void accept_func(void *sock, void *user_data) {
     assert(sock);
     assert(user_data);
 
-    char sock_info[64];
-    memset(sock_info, 0, sizeof(sock_info));
-    get_sock_info(sock, sock_info, sizeof(sock_info));
-    AB_LOGGER_DEBUG("New connection[%s]\n", sock_info);
+    print_sock_info(sock, "new connection.");
 
     T rtsp = (T) user_data;
 
@@ -275,6 +294,7 @@ void accept_func(void *sock, void *user_data) {
     NEW(new_client);
 
     new_client->sock    = sock;
+    new_client->video_codec = rtsp->video_codec;
     new_client->ready   = false;
     new_client->method  = AB_RTSP_OVER_NONE;
 
@@ -340,7 +360,7 @@ static void send_rtp_to_client(list_t clients, ab_udp_server_t rtp_udp_srv,
     }
 }
 
-static void set_slice_header(unsigned char *slice_header, int nalu_type,
+static void set_h264_slice_header(unsigned char *slice_header, int nalu_type,
     int slice_total, int slice_index) {
     slice_header[0] = (nalu_type & 0x60) | 0x1c;
     slice_header[1] = nalu_type & 0x1f;
@@ -349,6 +369,18 @@ static void set_slice_header(unsigned char *slice_header, int nalu_type,
         slice_header[1] |= 0x80;
     else if (slice_total - 1 == slice_index)
         slice_header[1] |= 0x40;
+}
+
+static void set_h265_slice_header(unsigned char *slice_header, int nalu_type,
+    int slice_total, int slice_index) {
+    slice_header[0] = 0x62;
+    slice_header[1] = 1;
+
+    slice_header[2] = (nalu_type >> 1) & 0x3f;
+    if (0 == slice_index)
+        slice_header[2] |= 0x80;
+    else if (slice_total - 1 == slice_index)
+        slice_header[2] |= 0x40;
 }
 
 void rtp_send_nalu(T rtsp, 
@@ -378,8 +410,17 @@ void rtp_send_nalu(T rtsp,
 
         ++rtsp->sequence;
     } else {
-        int slice_num = (nalu_len - 1) / RTP_MAX_SIZE;
-        int remain = (nalu_len - 1) % RTP_MAX_SIZE;
+        unsigned int header_len = 0, data_offset = 0;
+        if (AB_VIDEO_CODEC_H264 == rtsp->video_codec) {
+            header_len = 2;
+            data_offset = 1;
+        } else if (AB_VIDEO_CODEC_H265 == rtsp->video_codec) {
+            header_len = 3;
+            data_offset = 2;
+        }
+
+        int slice_num = (nalu_len - data_offset) / RTP_MAX_SIZE;
+        int remain = (nalu_len - data_offset) % RTP_MAX_SIZE;
         if (remain)
             ++slice_num;
 
@@ -392,7 +433,7 @@ void rtp_send_nalu(T rtsp,
 
             fill_rtsp_interleave_frame(
                 (ab_rtsp_interleaved_frame_t *) rtsp->rtp_buffer.data,
-                pkg_data_len + sizeof(ab_rtp_header_t) + 2);
+                pkg_data_len + sizeof(ab_rtp_header_t) + header_len);
             rtsp->rtp_buffer.used = sizeof(ab_rtsp_interleaved_frame_t);
 
             fill_rtp_header(
@@ -400,12 +441,16 @@ void rtp_send_nalu(T rtsp,
                 rtsp->sequence, rtsp->timestamp);
             rtsp->rtp_buffer.used += sizeof(ab_rtp_header_t);
 
-            set_slice_header(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used,
-                nalu_type, slice_num, i);
-            rtsp->rtp_buffer.used += 2;
+            if (AB_VIDEO_CODEC_H264 == rtsp->video_codec)
+                set_h264_slice_header(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used,
+                    nalu_type, slice_num, i);
+            else if (AB_VIDEO_CODEC_H265 == rtsp->video_codec)
+                set_h265_slice_header(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used,
+                    nalu_type, slice_num, i);
+            rtsp->rtp_buffer.used += header_len;
 
             memcpy(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used, 
-                nalu + i * RTP_MAX_SIZE + 1, pkg_data_len);
+                nalu + i * RTP_MAX_SIZE + data_offset, pkg_data_len);
             rtsp->rtp_buffer.used += pkg_data_len;
 
             pthread_mutex_lock(&rtsp->mutex);
@@ -459,19 +504,30 @@ static int handle_cmd_options(char *buf, unsigned int buf_size,
 }
 
 static int handle_cmd_describe(char *buf, unsigned int buf_size,
-    const char *url, unsigned int cseq) {
+    const char *url, unsigned int cseq, int video_codec) {
     char sdp[256];
     char local_ip[32];
     sscanf(url, "rtsp://%[^:]:", local_ip);
 
-    snprintf(sdp, sizeof(sdp), 
-        "v=0\r\n"
-        "o=- 9%ld 1 IN IP4 %s\r\n"
-        "t=0 0\r\n"
-        "a=control:*\r\n"
-        "m=video 0 RTP/AVP 96\r\n"
-        "a=rtpmap:96 H264/90000\r\n"
-        "a=control:track0\r\n", time(NULL), local_ip);
+    if (AB_VIDEO_CODEC_H264 == video_codec)
+        snprintf(sdp, sizeof(sdp), 
+            "v=0\r\n"
+            "o=- 9%ld 1 IN IP4 %s\r\n"
+            "t=0 0\r\n"
+            "a=control:*\r\n"
+            "m=video 0 RTP/AVP 96\r\n"
+            "a=rtpmap:96 H264/90000\r\n"
+            "a=control:track0\r\n", time(NULL), local_ip);
+    else if (AB_VIDEO_CODEC_H265 == video_codec)
+        snprintf(sdp, sizeof(sdp), 
+            "v=0\r\n"
+            "o=- 9%ld 1 IN IP4 %s\r\n"
+            "t=0 0\r\n"
+            "a=control:*\r\n"
+            "m=video 0 RTP/AVP 96\r\n"
+            "a=rtpmap:96 H265/90000\r\n"
+            "a=control:track0\r\n", time(NULL), local_ip);
+
 
     snprintf(buf, buf_size, 
         "RTSP/1.0 200 OK\r\n"
@@ -561,7 +617,7 @@ static int process_client_request(ab_rtsp_client_t *client,
     if (strcmp(method, "OPTIONS") == 0) {
         len = handle_cmd_options(response, response_size, cseq);
     } else if (strcmp(method, "DESCRIBE") == 0) {
-        len = handle_cmd_describe(response, response_size, url, cseq);
+        len = handle_cmd_describe(response, response_size, url, cseq, client->video_codec);
     } else if (strcmp(method, "SETUP") == 0) {
         line = strstr(request, "Transport");
 
@@ -606,10 +662,7 @@ static void recv_client_msg(ab_rtsp_client_t *client) {
     if (nread < 0) {
         AB_LOGGER_ERROR("return %d, %s.\n", nread, strerror(errno));
     } else if (0 == nread) {
-        char sock_info[64];
-        memset(sock_info, 0, sizeof(sock_info));
-        get_sock_info(client->sock, sock_info, sizeof(sock_info));
-        AB_LOGGER_DEBUG("Close connection[%s]\n", sock_info);
+        print_sock_info(client->sock, "close connection.");
         ab_socket_free(&client->sock);
     } else {
         AB_LOGGER_DEBUG("request:\n%s\n", request);

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <string.h>
 #include <sys/signal.h>
 
 static bool g_quit = true;
@@ -27,7 +28,13 @@ int main(int argc, char *argv[]) {
     ab_logger_init(AB_LOGGER_OUTPUT_TO_STDOUT, ".", "log", 100, 1024 * 1024);
     AB_LOGGER_INFO("startup.\n");
 
-    ab_rtsp_t rtsp = ab_rtsp_new(554);
+    int video_codec = 0;
+    if (strstr(in_file, ".h264"))
+        video_codec = 1;
+    else if (strstr(in_file, ".h265"))
+        video_codec = 2;
+
+    ab_rtsp_t rtsp = ab_rtsp_new(554, video_codec);
 
     AB_LOGGER_INFO("RTSP server startup.\n");
 
