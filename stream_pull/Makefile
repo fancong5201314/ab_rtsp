@@ -1,20 +1,21 @@
 .PHONY: all clean
 
-TARGET=stream_push
+TARGET=stream_pull
 
 CC=gcc
 
-CFLAGS=-I. \
-	   -I3rd_party/log4c/include \
+TOP=..
+CFLAGS=-I$(TOP) \
+	   -I$(TOP)/3rd_party/log4c/include \
 	   -g3 -std=gnu11
 
-LDFLAGS=-L3rd_party/log4c/lib \
+LDFLAGS=-L$(TOP)/3rd_party/log4c/lib \
 	    -llog4c -lpthread
 
 SRC=$(wildcard *.c \
-	ab_base/*.c \
-	ab_net/*.c \
-	ab_log/*.c )
+	$(TOP)/ab_base/*.c \
+	$(TOP)/ab_net/*.c \
+	$(TOP)/ab_log/*.c )
 OBJ=$(SRC:%.c=%.o)
 
 all:$(TARGET)
