@@ -29,6 +29,10 @@ struct T {
     unsigned int seq;
     unsigned long long session;
 
+    unsigned int buf_size;
+    unsigned int buf_used;
+    unsigned char *buf;
+
     bool quit;
     pthread_t child_thd;
 };
@@ -169,24 +173,41 @@ static bool send_cmd_play(T t, const char *url) {
     return true;
 }
 
+/*
+nal_type = [0] & 0x1F; 
+flag = [1] & 0xE0 ; 
+unsigned char nal_fua = ([0] & 0xe0) | ([1] & 0x1f); // FU_A nal 
+if  (nal_type == 0x1c) { // fu-a 
+     if  (flag == 0x80 ) { // start
+     } else if (flag == 0x40 ) { // end
+     } else { // slice
+     }
+ } else { // single
+ } 
+*/
 static void *child_thd_callback(void *arg) {
     assert(arg);
 
     ab_rtsp_pull_stream_t t = (ab_rtsp_pull_stream_t) arg;
-    unsigned int data_size = 512 * 1024;
-    unsigned char *data = (unsigned char *) malloc(data_size);
+    unsigned int nalu_buf_size = 512 * 1024;
+    unsigned int nalu_buf_used = 0;
+    unsigned char *nalu_buf = (unsigned char *) ALLOC(nalu_buf_size);
+
+    unsigned int recv_buf_size = 1400;
+    unsigned char *recv_buf = (unsigned char *) ALLOC(recv_buf_size);
 
     while (!t->quit) {
-        int nrecv = ab_tcp_client_recv(t->tcp_client, data, data_size);
-        if (nrecv > 0 && nrecv <= data_size) {
-            if (t->callback) {
-                t->callback(data, nrecv, t->user_data);
-            }
+        int nrecv = ab_tcp_client_recv(t->tcp_client, recv_buf, recv_buf_size);
+        if (nrecv > 0 && nrecv <= t->size - t->used) {
+            memcpy(t->buf + t->used, recv_buf, nrecv);
+            // if (t->callback) {
+            //     t->callback(data, nrecv, t->user_data);
+            // }
         }
     }
 
-    free(data);
-    data = NULL;
+    FREE(recv_buf);
+    FREE(nalu_buf);
 
     return NULL;
 }
@@ -210,6 +231,10 @@ T ab_rtsp_pull_stream_new(const char *url,
     result->user_data = user_data;
     result->callback = cb;
 
+    result->buf_size = 512 * 1024;
+    result->buf_used = 0;
+    result->buf = (unsigned char *) ALLOC(result->buf_size);
+
     result->tcp_client = ab_tcp_client_new(host_buf, port);
 
     if (result->tcp_client) {
@@ -230,5 +255,10 @@ void ab_rtsp_pull_stream_free(T *t) {
     (*t)->quit = true;
     pthread_join((*t)->child_thd, NULL);
     ab_tcp_client_free(&(*t)->tcp_client);
+
+    FREE((*t)->buf);
+    (*t)->buf_size = 0;
+    (*t)->buf_used = 0;
+
     FREE(*t);
 }
