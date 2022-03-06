@@ -19,6 +19,8 @@
 #include <stdbool.h>
 #include <pthread.h>
 
+#include <arpa/inet.h>
+
 #define T ab_rtsp_pull_stream_t
 struct T {
     void *user_data;
@@ -189,25 +191,57 @@ static void *child_thd_callback(void *arg) {
     assert(arg);
 
     ab_rtsp_pull_stream_t t = (ab_rtsp_pull_stream_t) arg;
-    unsigned int nalu_buf_size = 512 * 1024;
-    unsigned int nalu_buf_used = 0;
-    unsigned char *nalu_buf = (unsigned char *) ALLOC(nalu_buf_size);
 
-    unsigned int recv_buf_size = 1400;
+    unsigned int recv_buf_size = 512 * 1024;
     unsigned char *recv_buf = (unsigned char *) ALLOC(recv_buf_size);
+
+    unsigned int start_pos = 0;
 
     while (!t->quit) {
         int nrecv = ab_tcp_client_recv(t->tcp_client, recv_buf, recv_buf_size);
-        if (nrecv > 0 && nrecv <= t->size - t->used) {
-            memcpy(t->buf + t->used, recv_buf, nrecv);
-            // if (t->callback) {
-            //     t->callback(data, nrecv, t->user_data);
-            // }
+        if (nrecv > 0) {
+            start_pos = 0;
+            while (start_pos < nrecv) {
+                if (recv_buf[start_pos] != 0x24) {
+                    continue;
+                }
+
+                unsigned short rtp_len = ntohs(*(unsigned short *)(recv_buf + 2));
+
+                unsigned char nal_type = recv_buf[16] & 0x1F;
+                unsigned char flag = recv_buf[17] & 0xE0;
+                unsigned char nal_fua = (recv_buf[16] & 0xe0) | (recv_buf[17] & 0x1f);
+                if  (0x1c == nal_type) { // fu-a 
+                     if  (0x80 == flag) { // start
+                        if (t->callback) {
+                            t->callback(&nal_fua, 1, t->user_data);
+                            t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                        }
+                     } else if (0x40 == flag) { // end
+                        if (t->callback) {
+                            t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                        }
+                     } else { // slice
+                        if (t->callback) {
+                            t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                        }
+                     }
+                } else if (0x7 == nal_type || 0x8 == nal_type) {
+                    if (t->callback) {
+                        t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
+                    }
+                } else {
+                    // if (t->callback) {
+                    //     t->callback(data, nrecv, t->user_data);
+                    // }
+                } 
+
+                start_pos += rtp_len + 4;
+            }
         }
     }
 
     FREE(recv_buf);
-    FREE(nalu_buf);
 
     return NULL;
 }
