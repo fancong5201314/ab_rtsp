@@ -194,42 +194,28 @@ static void *child_thd_callback(void *arg) {
                     break;
                 }
 
-                unsigned short rtp_len = ntohs(*(unsigned short *)(recv_buf + 2));
+                unsigned short rtp_len = ntohs(*(unsigned short *)(recv_buf + start_pos + 2));
 
-                unsigned char nal_type = recv_buf[16] & 0x1F;
+                unsigned char nal_type = recv_buf[start_pos + 16] & 0x1F;
                 unsigned int slice = 0x1000000;
                 if  (0x1C == nal_type || 0x1D == nal_type) {
-                    unsigned char flag = recv_buf[17] & 0xE0;
+                    unsigned char flag = recv_buf[start_pos + 17] & 0xE0;
                     if (0x80 == flag) { // start
                         if (t->callback) {
-                            unsigned char nal_fua = (recv_buf[16] & 0xE0) | (recv_buf[17] & 0x1F);
+                            unsigned char nal_fua = (recv_buf[start_pos + 16] & 0xE0) | (recv_buf[start_pos + 17] & 0x1F);
                             t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
                             t->callback(&nal_fua, 1, t->user_data);
-                            // t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
                         }
-                    } else if (0x40 == flag) { // end
-                        // if (t->callback) {
-                        //     t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
-                        // }
-                    } else { // part
-                        // if (t->callback) {
-                        //     t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
-                        // }
                     }
 
                     if (t->callback) {
                         t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
                     }
-                } else if (0x7 == nal_type || 0x8 == nal_type) {
+                } else {
                     if (t->callback) {
                         t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
                         t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
                     }
-                } else {
-                    // if (t->callback) {
-                    //     t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
-                    //     t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
-                    // }
                 } 
 
                 start_pos += rtp_len + 4;

@@ -171,7 +171,7 @@ void ab_rtsp_free(T *rtsp) {
 }
 
 int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
-    if (NULL == data || 0 == data_size)
+    if (NULL == data || 0 == data_size) {
         if (rtsp->cache.used > 0) {
             int first_start_code_pos = find_start_code(
                 rtsp->cache.data, rtsp->cache.used);
@@ -186,6 +186,7 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
                     rtsp->cache.used - start_code);
                 rtsp->cache.used = 0;
             }
+        }
 
         return 0;
     }
@@ -206,13 +207,14 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
         if (0 == first_start_code_pos) {
             unsigned int start_code = 0;
             if (start_code3(rtsp->cache.data + start_pos, 
-                rtsp->cache.used - start_pos))
+                rtsp->cache.used - start_pos)) {
                 start_code = 3;
-            else if (start_code4(rtsp->cache.data + start_pos, 
-                rtsp->cache.used - start_pos))
+            } else if (start_code4(rtsp->cache.data + start_pos, 
+                rtsp->cache.used - start_pos)) {
                 start_code = 4;
-            else
+            } else {
                 continue;
+            }
 
             int next_start_code_pos =
                 find_start_code(rtsp->cache.data + start_pos + start_code, 
@@ -231,8 +233,9 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
                     next_start_code_pos);
                 start_pos += start_code + next_start_code_pos;
             }
-        } else
+        } else {
             break;
+        }
     }
 
     return data_size;
@@ -305,34 +308,36 @@ void accept_func(void *sock, void *user_data) {
 
 bool start_code3(const unsigned char *data, unsigned int data_size) {
     if (data_size >= 3 &&
-        0x00 == data[0] && 
-        0x00 == data[1] && 
-        0x01 == data[2])
+        0x00 == data[0] && 0x00 == data[1] && 0x01 == data[2])
         return true;
     return false;
 }
 
 bool start_code4(const unsigned char *data, unsigned int data_size) {
     if (data_size >= 4 &&
-        0x00 == data[0] && 
-        0x00 == data[1] &&
-        0x00 == data[2] && 
-        0x01 == data[3])
+        0x00 == data[0] && 0x00 == data[1] &&
+        0x00 == data[2] && 0x01 == data[3]) {
         return true;
+    }
     return false;
 }
 
 int find_start_code(const unsigned char *data, unsigned int data_size) {
-    if (data_size < 4)
+    if (data_size < 4) {
         return -1;
+    }
 
     unsigned int i;
-    for (i = 0; i < data_size - 4; ++i)
-        if (start_code3(data + i, 3) || start_code4(data + i, 4))
+    for (i = 0; i < data_size - 4; ++i) {
+        if (start_code3(data + i, 3) || start_code4(data + i, 4)) {
             break;
+        }
+    }
 
-    if ((i < data_size - 4) || start_code3(data + i, 3))
+    if ((i < data_size - 4) || start_code3(data + i, 3)) {
         return i;
+    }
+
     return -1;
 }
 
@@ -365,10 +370,11 @@ static void set_h264_slice_header(unsigned char *slice_header, int nalu_type,
     slice_header[0] = (nalu_type & 0x60) | 0x1c;
     slice_header[1] = nalu_type & 0x1f;
 
-    if (0 == slice_index)
+    if (0 == slice_index) {
         slice_header[1] |= 0x80;
-    else if (slice_total - 1 == slice_index)
+    } else if (slice_total - 1 == slice_index) {
         slice_header[1] |= 0x40;
+    }
 }
 
 static void set_h265_slice_header(unsigned char *slice_header, int nalu_type,
@@ -377,10 +383,11 @@ static void set_h265_slice_header(unsigned char *slice_header, int nalu_type,
     slice_header[1] = 1;
 
     slice_header[2] = (nalu_type >> 1) & 0x3f;
-    if (0 == slice_index)
+    if (0 == slice_index) {
         slice_header[2] |= 0x80;
-    else if (slice_total - 1 == slice_index)
+    } else if (slice_total - 1 == slice_index) {
         slice_header[2] |= 0x40;
+    }
 }
 
 void rtp_send_nalu(T rtsp, 
@@ -421,15 +428,17 @@ void rtp_send_nalu(T rtsp,
 
         int slice_num = (nalu_len - data_offset) / RTP_MAX_SIZE;
         int remain = (nalu_len - data_offset) % RTP_MAX_SIZE;
-        if (remain)
+        if (remain) {
             ++slice_num;
+        }
 
         for (int i = 0; i < slice_num; ++i) {
             unsigned int pkg_data_len = 0;
-            if (i < slice_num - 1 || 0 == remain) 
+            if (i < slice_num - 1 || 0 == remain) {
                 pkg_data_len = RTP_MAX_SIZE;
-            else
+            } else {
                 pkg_data_len = remain;
+            }
 
             fill_rtsp_interleave_frame(
                 (ab_rtsp_interleaved_frame_t *) rtsp->rtp_buffer.data,
@@ -441,12 +450,14 @@ void rtp_send_nalu(T rtsp,
                 rtsp->sequence, rtsp->timestamp);
             rtsp->rtp_buffer.used += sizeof(ab_rtp_header_t);
 
-            if (AB_VIDEO_CODEC_H264 == rtsp->video_codec)
+            if (AB_VIDEO_CODEC_H264 == rtsp->video_codec) {
                 set_h264_slice_header(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used,
                     nalu_type, slice_num, i);
-            else if (AB_VIDEO_CODEC_H265 == rtsp->video_codec)
+            } else if (AB_VIDEO_CODEC_H265 == rtsp->video_codec) {
                 set_h265_slice_header(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used,
                     nalu_type, slice_num, i);
+            }
+
             rtsp->rtp_buffer.used += header_len;
 
             memcpy(rtsp->rtp_buffer.data + rtsp->rtp_buffer.used, 
@@ -474,8 +485,9 @@ static list_t update_clients_list(list_t head) {
             head = head->rest;
             FREE(del_node->first);
             FREE(del_node);
-        } else
+        } else {
             break;
+        }
     }
 
     list_t result = head;
@@ -486,8 +498,9 @@ static list_t update_clients_list(list_t head) {
             head->rest = head->rest->rest;
             FREE(del_node->first);
             FREE(del_node);
-        } else
+        } else {
             head = head->rest;
+        }
     }
 
     return result;
@@ -509,7 +522,7 @@ static int handle_cmd_describe(char *buf, unsigned int buf_size,
     char local_ip[32];
     sscanf(url, "rtsp://%[^:]:", local_ip);
 
-    if (AB_VIDEO_CODEC_H264 == video_codec)
+    if (AB_VIDEO_CODEC_H264 == video_codec) {
         snprintf(sdp, sizeof(sdp), 
             "v=0\r\n"
             "o=- 9%ld 1 IN IP4 %s\r\n"
@@ -518,7 +531,7 @@ static int handle_cmd_describe(char *buf, unsigned int buf_size,
             "m=video 0 RTP/AVP 96\r\n"
             "a=rtpmap:96 H264/90000\r\n"
             "a=control:track0\r\n", time(NULL), local_ip);
-    else if (AB_VIDEO_CODEC_H265 == video_codec)
+    } else if (AB_VIDEO_CODEC_H265 == video_codec) {
         snprintf(sdp, sizeof(sdp), 
             "v=0\r\n"
             "o=- 9%ld 1 IN IP4 %s\r\n"
@@ -527,7 +540,7 @@ static int handle_cmd_describe(char *buf, unsigned int buf_size,
             "m=video 0 RTP/AVP 96\r\n"
             "a=rtpmap:96 H265/90000\r\n"
             "a=control:track0\r\n", time(NULL), local_ip);
-
+    }
 
     snprintf(buf, buf_size, 
         "RTSP/1.0 200 OK\r\n"
@@ -608,10 +621,11 @@ static int process_client_request(ab_rtsp_client_t *client,
 
     unsigned int cseq = 0;
     const char *line = strstr(request, "CSeq");
-    if (NULL == line)
+    if (NULL == line) {
         return 0;
-    else
+    } else {
         sscanf(line, "CSeq: %u\r\n", &cseq);
+    }
 
     int len = 0;
     if (strcmp(method, "OPTIONS") == 0) {
@@ -633,8 +647,9 @@ static int process_client_request(ab_rtsp_client_t *client,
             client->method = AB_RTSP_OVER_UDP;
             sscanf(line, "Transport: RTP/AVP;unicast;client_port=%hu-%hu\r\n", 
                 &client->rtp_chn_port, &client->rtcp_chn_port);
-        } else
+        } else {
             return 0;
+        }
 
         len = handle_cmd_setup(response, response_size, cseq, client->method, 
             client->rtp_chn_port, client->rtcp_chn_port);
@@ -674,8 +689,9 @@ static void recv_client_msg(ab_rtsp_client_t *client) {
         AB_LOGGER_DEBUG("response:\n%s\n", response);
         if (len > 0) {
             int nsend = ab_socket_send(client->sock, (unsigned char *) response, len);
-            if (nsend != len)
+            if (nsend != len) {
                 AB_LOGGER_DEBUG("ab_socket_send error.\n");
+            }
         }
     }
 }
@@ -696,8 +712,9 @@ void *event_looper_cb(void *arg) {
             ab_rtsp_client_t *rtsp_client = client->first;
             int fd = ab_socket_fd(rtsp_client->sock);
             FD_SET(fd, &rfds);
-            if (fd > max_fd)
+            if (fd > max_fd) {
                 max_fd = fd;
+            }
             client = client->rest;
         }
         pthread_mutex_unlock(&rtsp->mutex);
@@ -709,18 +726,21 @@ void *event_looper_cb(void *arg) {
             timeout.tv_sec = 0;
             timeout.tv_usec = 50 * 1000;
             int nums = select(max_fd + 1, &rfds, NULL, NULL, &timeout);
-            if (nums < 0)
+            if (nums < 0) {
                 break;
-            else if (0 == nums)
+            } else if (0 == nums) {
                 continue;
+            }
 
             pthread_mutex_lock(&rtsp->mutex);
             list_t client = rtsp->clients;
             while (client) {
                 ab_rtsp_client_t *rtsp_client = client->first;
                 int fd = ab_socket_fd(rtsp_client->sock);
-                if (FD_ISSET(fd, &rfds))
+                if (FD_ISSET(fd, &rfds)) {
                     recv_client_msg(rtsp_client);
+                }
+
                 client = client->rest;
             }
             rtsp->clients = update_clients_list(rtsp->clients);

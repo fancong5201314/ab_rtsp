@@ -47,9 +47,9 @@ int main(int argc, char *argv[]) {
         while (!g_quit) {
             if (file != NULL) {
                 nread = fread(data_buf, 1, data_buf_size, file);
-                if (nread > 0)
+                if (nread > 0) {
                     ab_rtsp_send(rtsp, data_buf, nread);
-                else {
+                } else {
                     ab_rtsp_send(rtsp, NULL, 0);
                     fseek(file, 0, SEEK_SET);
                 }
