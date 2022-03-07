@@ -175,18 +175,6 @@ static bool send_cmd_play(T t, const char *url) {
     return true;
 }
 
-/*
-nal_type = [0] & 0x1F; 
-flag = [1] & 0xE0 ; 
-unsigned char nal_fua = ([0] & 0xe0) | ([1] & 0x1f); // FU_A nal 
-if  (nal_type == 0x1c) { // fu-a 
-     if  (flag == 0x80 ) { // start
-     } else if (flag == 0x40 ) { // end
-     } else { // slice
-     }
- } else { // single
- } 
-*/
 static void *child_thd_callback(void *arg) {
     assert(arg);
 
@@ -203,36 +191,44 @@ static void *child_thd_callback(void *arg) {
             start_pos = 0;
             while (start_pos < nrecv) {
                 if (recv_buf[start_pos] != 0x24) {
-                    continue;
+                    break;
                 }
 
                 unsigned short rtp_len = ntohs(*(unsigned short *)(recv_buf + 2));
 
                 unsigned char nal_type = recv_buf[16] & 0x1F;
-                unsigned char flag = recv_buf[17] & 0xE0;
-                unsigned char nal_fua = (recv_buf[16] & 0xe0) | (recv_buf[17] & 0x1f);
-                if  (0x1c == nal_type) { // fu-a 
-                     if  (0x80 == flag) { // start
+                unsigned int slice = 0x1000000;
+                if  (0x1C == nal_type || 0x1D == nal_type) {
+                    unsigned char flag = recv_buf[17] & 0xE0;
+                    if (0x80 == flag) { // start
                         if (t->callback) {
+                            unsigned char nal_fua = (recv_buf[16] & 0xE0) | (recv_buf[17] & 0x1F);
+                            t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
                             t->callback(&nal_fua, 1, t->user_data);
-                            t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                            // t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
                         }
-                     } else if (0x40 == flag) { // end
-                        if (t->callback) {
-                            t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
-                        }
-                     } else { // slice
-                        if (t->callback) {
-                            t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
-                        }
-                     }
+                    } else if (0x40 == flag) { // end
+                        // if (t->callback) {
+                        //     t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                        // }
+                    } else { // part
+                        // if (t->callback) {
+                        //     t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                        // }
+                    }
+
+                    if (t->callback) {
+                        t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                    }
                 } else if (0x7 == nal_type || 0x8 == nal_type) {
                     if (t->callback) {
+                        t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
                         t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
                     }
                 } else {
                     // if (t->callback) {
-                    //     t->callback(data, nrecv, t->user_data);
+                    //     t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                    //     t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
                     // }
                 } 
 
