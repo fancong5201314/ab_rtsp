@@ -13,6 +13,7 @@
 #include "ab_base/ab_assert.h"
 
 #include <stdlib.h>
+#include <sys/select.h>
 
 #define T ab_udp_client_t
 struct T {
@@ -55,7 +56,20 @@ int  ab_udp_client_recv(T t,
     unsigned char *buf, unsigned int buf_size) {
     assert(t);
 
-    return ab_socket_udp_recv(t->sock, 
-        addr_buf, addr_buf_size,
-        port, buf, buf_size);
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 100 * 1000;
+
+    fd_set rfds;
+    FD_ZERO(&rfds);
+
+    int fd = ab_socket_fd(t->sock);
+    FD_SET(fd, &rfds);
+    if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0 && FD_ISSET(fd, &rfds)) {
+        return ab_socket_udp_recv(t->sock, 
+            addr_buf, addr_buf_size,
+            port, buf, buf_size);
+    }
+
+    return -1;
 }
