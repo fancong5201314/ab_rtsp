@@ -1,11 +1,11 @@
 /*
- * ab_rtsp_pull_stream.c
+ * ab_rtsp_client.c
  *
  *  Created on: 2022年3月1日
  *      Author: ljm
  */
 
-#include "ab_rtsp_pull_stream.h"
+#include "ab_rtsp_client.h"
 
 #include "ip_check.h"
 
@@ -21,7 +21,7 @@
 
 #include <arpa/inet.h>
 
-#define T ab_rtsp_pull_stream_t
+#define T ab_rtsp_client_t
 struct T {
     void *user_data;
     void (*callback)(const unsigned char *, unsigned int, void *);
@@ -178,7 +178,7 @@ static bool send_cmd_play(T t, const char *url) {
 static void *child_thd_callback(void *arg) {
     assert(arg);
 
-    ab_rtsp_pull_stream_t t = (ab_rtsp_pull_stream_t) arg;
+    T t = (T) arg;
 
     unsigned int recv_buf_size = 512 * 1024;
     unsigned char *recv_buf = (unsigned char *) ALLOC(recv_buf_size);
@@ -228,7 +228,7 @@ static void *child_thd_callback(void *arg) {
     return NULL;
 }
 
-T ab_rtsp_pull_stream_new(const char *url,
+T ab_rtsp_client_new(const char *url,
     void (*cb)(const unsigned char *, unsigned int, void *), void *user_data) {
     char host_buf[64] = {0};
     unsigned short port = 0;
@@ -266,7 +266,7 @@ T ab_rtsp_pull_stream_new(const char *url,
     return result;
 }
 
-void ab_rtsp_pull_stream_free(T *t) {
+void ab_rtsp_client_free(T *t) {
     assert(t && *t);
     (*t)->quit = true;
     pthread_join((*t)->child_thd, NULL);

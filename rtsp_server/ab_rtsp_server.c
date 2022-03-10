@@ -1,11 +1,11 @@
 /*
- * ab_rtsp.c
+ * ab_rtsp_server.c
  *
  *  Created on: 2022年1月7日
  *      Author: ljm
  */
 
-#include "ab_rtsp.h"
+#include "ab_rtsp_server.h"
 #include "ab_rtp_def.h"
 
 #include "ab_base/ab_list.h"
@@ -30,7 +30,7 @@
 
 #include <arpa/inet.h>
 
-#define T ab_rtsp_t
+#define T ab_rtsp_server_t
 
 enum ab_rtsp_over_method_t {
     AB_RTSP_OVER_NONE = 0,
@@ -108,44 +108,44 @@ static void fill_rtp_header(ab_rtp_header_t *rtp_header,
 static void rtp_send_nalu(T rtsp, 
     const unsigned char *nalu, unsigned int nalu_len);
 
-T ab_rtsp_new(unsigned short port, int video_codec) {
+T ab_rtsp_server_new(unsigned short port, int video_codec) {
     const unsigned int data_cache_size          = 1024 * 1024;
     const unsigned int rtp_buffer_size          = 1400;
 
 
-    T rtsp;
-    NEW(rtsp);
-    assert(rtsp);
+    T result;
+    NEW(result);
+    assert(result);
 
-    rtsp->rtsp_tcp_srv  = ab_tcp_server_new(port, accept_func, rtsp);
+    result->rtsp_tcp_srv    = ab_tcp_server_new(port, accept_func, result);
 
-    rtsp->rtp_udp_srv   = ab_udp_server_new(RTP_SERVER_PORT);
-    rtsp->rtcp_udp_srv  = ab_udp_server_new(RTCP_SERVER_PORT);
+    result->rtp_udp_srv     = ab_udp_server_new(RTP_SERVER_PORT);
+    result->rtcp_udp_srv    = ab_udp_server_new(RTCP_SERVER_PORT);
 
-    rtsp->video_codec   = video_codec;
+    result->video_codec     = video_codec;
 
-    rtsp->clients       = NULL;
+    result->clients         = NULL;
 
-    pthread_mutex_init(&rtsp->mutex, NULL);
+    pthread_mutex_init(&result->mutex, NULL);
 
-    rtsp->quit          = false;
-    pthread_create(&rtsp->event_looper_thd, NULL, event_looper_cb, rtsp);
+    result->quit            = false;
+    pthread_create(&result->event_looper_thd, NULL, event_looper_cb, result);
 
-    rtsp->sequence      = 0;
-    rtsp->timestamp     = 0;
+    result->sequence        = 0;
+    result->timestamp       = 0;
 
-    rtsp->cache.size    = data_cache_size;
-    rtsp->cache.used    = 0;
-    rtsp->cache.data    = ALLOC(rtsp->cache.size);
+    result->cache.size      = data_cache_size;
+    result->cache.used      = 0;
+    result->cache.data      = ALLOC(result->cache.size);
 
-    rtsp->rtp_buffer.size   = rtp_buffer_size;
-    rtsp->rtp_buffer.used   = 0;
-    rtsp->rtp_buffer.data   = ALLOC(rtsp->rtp_buffer.size);
+    result->rtp_buffer.size = rtp_buffer_size;
+    result->rtp_buffer.used = 0;
+    result->rtp_buffer.data = ALLOC(result->rtp_buffer.size);
 
-    return rtsp;
+    return result;
 }
 
-void ab_rtsp_free(T *rtsp) {
+void ab_rtsp_server_free(T *rtsp) {
     assert(rtsp && *rtsp);
 
     FREE((*rtsp)->rtp_buffer.data);
@@ -170,8 +170,9 @@ void ab_rtsp_free(T *rtsp) {
     FREE(*rtsp);
 }
 
-int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
-    if (NULL == data || 0 == data_size) {
+int ab_rtsp_server_send(T rtsp, const char *data, unsigned int data_len) {
+    int result = 0;
+    if (NULL == data || 0 == data_len) {
         if (rtsp->cache.used > 0) {
             int first_start_code_pos = find_start_code(
                 rtsp->cache.data, rtsp->cache.used);
@@ -188,17 +189,19 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
             }
         }
 
-        return 0;
+        return result;
     }
 
-    if (rtsp->cache.size - rtsp->cache.used >= data_size) {
-        memcpy(rtsp->cache.data + rtsp->cache.used, data, data_size);
-        rtsp->cache.used += data_size;
+    if (rtsp->cache.size - rtsp->cache.used >= data_len) {
+        memcpy(rtsp->cache.data + rtsp->cache.used, data, data_len);
+        rtsp->cache.used += data_len;
     } else {
         AB_LOGGER_WARN("Not enough spaces(%u < %u).\n", 
-            rtsp->cache.size, rtsp->cache.used + data_size);
-        return 0;
+            rtsp->cache.size, rtsp->cache.used + data_len);
+        return result;
     }
+
+    result = data_len;
 
     unsigned int start_pos = 0;
     while (start_pos < rtsp->cache.used) {
@@ -238,7 +241,7 @@ int ab_rtsp_send(T rtsp, const char *data, unsigned int data_size) {
         }
     }
 
-    return data_size;
+    return result;
 }
 
 static void get_sock_info(ab_socket_t sock,
@@ -323,22 +326,21 @@ bool start_code4(const unsigned char *data, unsigned int data_size) {
 }
 
 int find_start_code(const unsigned char *data, unsigned int data_size) {
-    if (data_size < 4) {
-        return -1;
-    }
+    int result = -1;
+    if (data_size >= 4) {
+        unsigned int i;
+        for (i = 0; i < data_size - 4; ++i) {
+            if (start_code3(data + i, 3) || start_code4(data + i, 4)) {
+                break;
+            }
+        }
 
-    unsigned int i;
-    for (i = 0; i < data_size - 4; ++i) {
-        if (start_code3(data + i, 3) || start_code4(data + i, 4)) {
-            break;
+        if ((i < data_size - 4) || start_code3(data + i, 3)) {
+            result = i;
         }
     }
 
-    if ((i < data_size - 4) || start_code3(data + i, 3)) {
-        return i;
-    }
-
-    return -1;
+    return result;
 }
 
 static void send_rtp_to_client(list_t clients, ab_udp_server_t rtp_udp_srv,

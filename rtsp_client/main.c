@@ -5,7 +5,7 @@
  *      Author: ljm
  */
 
-#include "ab_rtsp_pull_stream.h"
+#include "ab_rtsp_client.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +37,7 @@ int main(int argc, char *argv[]) {
 
     FILE *file = fopen("test.h264", "wb");
     
-    ab_rtsp_pull_stream_t handle = ab_rtsp_pull_stream_new(argv[1], recv_rtsp_data, file);
+    ab_rtsp_client_t handle = ab_rtsp_client_new(argv[1], recv_rtsp_data, file);
     g_quit = false;
     while (!g_quit) {
         sleep(1);
@@ -46,6 +46,6 @@ int main(int argc, char *argv[]) {
     fflush(file);
     fclose(file);
 
-    ab_rtsp_pull_stream_free(&handle);
+    ab_rtsp_client_free(&handle);
     return EXIT_SUCCESS;
 }

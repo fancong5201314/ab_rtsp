@@ -1,4 +1,4 @@
-#include "ab_rtsp.h"
+#include "ab_rtsp_server.h"
 
 #include "ab_base/ab_mem.h"
 
@@ -35,7 +35,7 @@ int main(int argc, char *argv[]) {
         video_codec = 2;
 
     if (video_codec != 0) {
-        ab_rtsp_t rtsp = ab_rtsp_new(554, video_codec);
+        ab_rtsp_server_t rtsp = ab_rtsp_server_new(554, video_codec);
 
         AB_LOGGER_INFO("RTSP server startup.\n");
 
@@ -48,9 +48,9 @@ int main(int argc, char *argv[]) {
             if (file != NULL) {
                 nread = fread(data_buf, 1, data_buf_size, file);
                 if (nread > 0) {
-                    ab_rtsp_send(rtsp, data_buf, nread);
+                    ab_rtsp_server_send(rtsp, data_buf, nread);
                 } else {
-                    ab_rtsp_send(rtsp, NULL, 0);
+                    ab_rtsp_server_send(rtsp, NULL, 0);
                     fseek(file, 0, SEEK_SET);
                 }
             }
@@ -64,7 +64,7 @@ int main(int argc, char *argv[]) {
 
         AB_LOGGER_INFO("RTSP server quit.\n");
 
-        ab_rtsp_free(&rtsp);
+        ab_rtsp_server_free(&rtsp);
     }
 
     AB_LOGGER_INFO("shutdown.\n");
