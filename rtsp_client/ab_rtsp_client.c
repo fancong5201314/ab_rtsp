@@ -10,6 +10,7 @@
 #include "ip_check.h"
 
 #include "ab_net/ab_tcp_client.h"
+#include "ab_net/ab_udp_client.h"
 #include "ab_base/ab_mem.h"
 #include "ab_base/ab_assert.h"
 
@@ -21,25 +22,111 @@
 
 #include <arpa/inet.h>
 
+#define RTP_CLIENT_PORT     30001
+#define RTCP_CLIENT_PORT    30002
+
 #define T ab_rtsp_client_t
+
+enum ab_rtsp_over_method_t {
+    AB_RTSP_OVER_NONE = 0,
+    AB_RTSP_OVER_TCP,
+    AB_RTSP_OVER_UDP
+};
+
 struct T {
+    int rtp_over_opt;
+
+    char srv_addr[64];
+
     void *user_data;
     void (*callback)(const unsigned char *, unsigned int, void *);
 
     ab_tcp_client_t tcp_client;
 
+    unsigned short udp_rtp_srv_port;
+    unsigned short udp_rtcp_srv_port;
+    ab_udp_client_t udp_rtp_client;
+    ab_udp_client_t udp_rtcp_client;
+
     unsigned int seq;
     unsigned long long session;
-
-    unsigned int buf_size;
-    unsigned int buf_used;
-    unsigned char *buf;
 
     bool quit;
     pthread_t child_thd;
 };
 
 static bool parse_rtsp_addr(const char *rtsp_addr, 
+    char *host_buf, unsigned int host_buf_size, unsigned short *port);
+static void *child_thd_callback(void *arg);
+
+static bool send_cmd_options(T t, const char *url);
+static bool send_cmd_describe(T t, const char *url);
+static bool send_cmd_setup(T t, const char *url);
+static bool send_cmd_play(T t, const char *url);
+
+T ab_rtsp_client_new(int rtp_over_opt, const char *url,
+    void (*cb)(const unsigned char *, unsigned int, void *), void *user_data) {
+    char host_buf[64] = {0};
+    unsigned short port = 0;
+
+    if (!parse_rtsp_addr(url, host_buf, sizeof(host_buf), &port)) {
+        return NULL;
+    }
+
+    if (ip_check(host_buf) != IP_VERSION_4 || 0 == port) {
+        return NULL;
+    }
+
+    T result;
+    NEW(result);
+
+    result->rtp_over_opt = rtp_over_opt;
+
+    int host_len = strlen(host_buf);
+    memset(result->srv_addr, 0, sizeof(result->srv_addr));
+    if (host_len < sizeof(result->srv_addr)) {
+        memcpy(result->srv_addr, host_buf, host_len);
+    }
+
+    result->user_data = user_data;
+    result->callback = cb;
+
+    result->tcp_client = ab_tcp_client_new(host_buf, port);
+
+    if (AB_RTSP_OVER_UDP == result->rtp_over_opt) {
+        result->udp_rtp_client = ab_udp_client_new(RTP_CLIENT_PORT);
+        result->udp_rtcp_client = ab_udp_client_new(RTCP_CLIENT_PORT);
+    }
+
+    if (result->tcp_client != NULL) {
+        send_cmd_options(result, url);
+        send_cmd_describe(result, url);
+        send_cmd_setup(result, url);
+        send_cmd_play(result, url);
+    }
+
+    result->quit = false;
+    pthread_create(&result->child_thd, NULL, child_thd_callback, result);
+
+    return result;
+}
+
+void ab_rtsp_client_free(T *t) {
+    assert(t && *t);
+    (*t)->quit = true;
+    pthread_join((*t)->child_thd, NULL);
+
+    if (AB_RTSP_OVER_UDP == (*t)->rtp_over_opt) {
+        ab_udp_client_free(&(*t)->udp_rtp_client);
+        ab_udp_client_free(&(*t)->udp_rtcp_client);
+    }
+
+    ab_tcp_client_free(&(*t)->tcp_client);
+
+    FREE(*t);
+}
+
+bool parse_rtsp_addr(const char *rtsp_addr, 
     char *host_buf, unsigned int host_buf_size, unsigned short *port) {
     char *pos_start = strstr(rtsp_addr, "rtsp://");
     if (NULL == pos_start) {
@@ -85,13 +172,13 @@ static bool parse_rtsp_addr(const char *rtsp_addr,
     return true;
 }
 
-static bool send_cmd_options(T t, const char *url) {
+bool send_cmd_options(T t, const char *url) {
     assert(t);
 
     char buf[1024];
     snprintf(buf, sizeof(buf), 
         "OPTIONS %s RTSP/1.0\r\n"
-        "CSeq: %u\r\n\r\n", url, t->seq);
+        "CSeq: %u\r\n\r\n", url, ++t->seq);
     unsigned int buf_len =strlen(buf);
     if (ab_tcp_client_send(t->tcp_client, (unsigned char *) buf, buf_len) <= 0) {
         return false;
@@ -106,14 +193,14 @@ static bool send_cmd_options(T t, const char *url) {
     return true;
 }
 
-static bool send_cmd_describe(T t, const char *url) {
+bool send_cmd_describe(T t, const char *url) {
     assert(t);
 
     char buf[1024];
     snprintf(buf, sizeof(buf), 
         "DESCRIBE %s RTSP/1.0\r\n"
         "CSeq: %u\r\n"
-        "Accept: application/sdp\r\n\r\n", url, t->seq);
+        "Accept: application/sdp\r\n\r\n", url, ++t->seq);
     unsigned int buf_len =strlen(buf);
     if (ab_tcp_client_send(t->tcp_client, (unsigned char *) buf, buf_len) <= 0) {
         return false;
@@ -128,14 +215,24 @@ static bool send_cmd_describe(T t, const char *url) {
     return true;
 }
 
-static bool send_cmd_setup(T t, const char *url) {
+bool send_cmd_setup(T t, const char *url) {
     assert(t);
 
     char buf[1024];
-    snprintf(buf, sizeof(buf), 
-        "SETUP %s RTSP/1.0\r\n"
-        "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
-        "CSeq: %u\r\n\r\n", url, t->seq);
+    if (AB_RTSP_OVER_TCP == t->rtp_over_opt) {
+        snprintf(buf, sizeof(buf), 
+            "SETUP %s RTSP/1.0\r\n"
+            "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
+            "CSeq: %u\r\n\r\n", url, ++t->seq);
+    } else if (AB_RTSP_OVER_UDP == t->rtp_over_opt) {
+        snprintf(buf, sizeof(buf), 
+            "SETUP %s RTSP/1.0\r\n"
+            "Transport: RTP/AVP;unicast;client_port=%u-%u\r\n"
+            "CSeq: %u\r\n\r\n", url, RTP_CLIENT_PORT, RTCP_CLIENT_PORT, ++t->seq);
+    } else {
+        return false;
+    }
+
     unsigned int buf_len =strlen(buf);
     if (ab_tcp_client_send(t->tcp_client, (unsigned char *) buf, buf_len) <= 0) {
         return false;
@@ -147,12 +244,18 @@ static bool send_cmd_setup(T t, const char *url) {
     }
 
     printf("%s\n", (const char *) buf);
-    char *pos = strstr(buf, "Session");
+    char *pos = strstr(buf, "server_port");
+    if (pos != NULL) {
+        sscanf(pos, "server_port=%hu-%hu\r\n", 
+            &t->udp_rtp_srv_port, &t->udp_rtcp_srv_port);
+    }
+
+    pos = strstr(buf, "Session");
     sscanf(pos, "Session: %llu\r\n", &t->session);
     return true;
 }
 
-static bool send_cmd_play(T t, const char *url) {
+bool send_cmd_play(T t, const char *url) {
     assert(t);
 
     char buf[1024];
@@ -160,7 +263,7 @@ static bool send_cmd_play(T t, const char *url) {
         "PLAY %s RTSP/1.0\r\n"
         "CSeq: %u\r\n"
         "Session: %llu\r\n"
-        "Range: npt=0.000-\n\r\n\r\n", url, t->seq, t->session);
+        "Range: npt=0.000-\n\r\n\r\n", url, ++t->seq, t->session);
     unsigned int buf_len =strlen(buf);
     if (ab_tcp_client_send(t->tcp_client, (unsigned char *) buf, buf_len) <= 0) {
         return false;
@@ -175,11 +278,7 @@ static bool send_cmd_play(T t, const char *url) {
     return true;
 }
 
-static void *child_thd_callback(void *arg) {
-    assert(arg);
-
-    T t = (T) arg;
-
+static void process_rtp_over_tcp(T t) {
     unsigned int recv_buf_size = 512 * 1024;
     unsigned char *recv_buf = (unsigned char *) ALLOC(recv_buf_size);
 
@@ -187,94 +286,104 @@ static void *child_thd_callback(void *arg) {
 
     while (!t->quit) {
         int nrecv = ab_tcp_client_recv(t->tcp_client, recv_buf, recv_buf_size);
-        if (nrecv > 0) {
-            start_pos = 0;
-            while (start_pos < nrecv) {
-                if (recv_buf[start_pos] != 0x24) {
-                    break;
+        if (nrecv <= 0) {
+            continue;
+        }
+
+        start_pos = 0;
+        while (start_pos < nrecv) {
+            if (recv_buf[start_pos] != 0x24) {
+                break;
+            }
+
+            unsigned short rtp_len = ntohs(*(unsigned short *)(recv_buf + start_pos + 2));
+
+            unsigned char nal_type = recv_buf[start_pos + 16] & 0x1F;
+            unsigned int slice = 0x1000000;
+            if  (0x1C == nal_type || 0x1D == nal_type) {
+                unsigned char flag = recv_buf[start_pos + 17] & 0xE0;
+                if (0x80 == flag) { // start
+                    if (t->callback) {
+                        unsigned char nal_fua = (recv_buf[start_pos + 16] & 0xE0) | (recv_buf[start_pos + 17] & 0x1F);
+                        t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                        t->callback(&nal_fua, 1, t->user_data);
+                    }
                 }
 
-                unsigned short rtp_len = ntohs(*(unsigned short *)(recv_buf + start_pos + 2));
+                if (t->callback) {
+                    t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                }
+            } else {
+                if (t->callback) {
+                    t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                    t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
+                }
+            } 
 
-                unsigned char nal_type = recv_buf[start_pos + 16] & 0x1F;
-                unsigned int slice = 0x1000000;
-                if  (0x1C == nal_type || 0x1D == nal_type) {
-                    unsigned char flag = recv_buf[start_pos + 17] & 0xE0;
-                    if (0x80 == flag) { // start
-                        if (t->callback) {
-                            unsigned char nal_fua = (recv_buf[start_pos + 16] & 0xE0) | (recv_buf[start_pos + 17] & 0x1F);
-                            t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
-                            t->callback(&nal_fua, 1, t->user_data);
-                        }
-                    }
+            start_pos += rtp_len + 4;
+        }
+    }
 
-                    if (t->callback) {
-                        t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
-                    }
-                } else {
-                    if (t->callback) {
-                        t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
-                        t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
-                    }
-                } 
+    FREE(recv_buf);
+}
 
-                start_pos += rtp_len + 4;
+static void process_rtp_over_udp(T t) {
+    unsigned int recv_buf_size = 1400;
+    unsigned char *recv_buf = (unsigned char *) ALLOC(recv_buf_size);
+
+    char recv_addr[64];
+    unsigned short recv_port = 0;
+
+    while (!t->quit) {
+        memset(recv_addr, 0, sizeof(recv_addr));
+        recv_port = 0;
+        int nrecv = ab_udp_client_recv(t->udp_rtp_client, 
+            recv_addr, sizeof(recv_addr), &recv_port, recv_buf, recv_buf_size);
+        if (nrecv <= 0) {
+            continue;
+        }
+
+        if (strcmp(recv_addr, t->srv_addr) != 0 || 
+            recv_port != t->udp_rtp_srv_port) {
+            continue;
+        }
+
+        unsigned char nal_type = recv_buf[12] & 0x1F;
+        unsigned int slice = 0x1000000;
+        if  (0x1C == nal_type || 0x1D == nal_type) {
+            unsigned char flag = recv_buf[13] & 0xE0;
+            if (0x80 == flag) {
+                if (t->callback) {
+                    unsigned char nal_fua = (recv_buf[12] & 0xE0) | (recv_buf[13] & 0x1F);
+                    t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                    t->callback(&nal_fua, 1, t->user_data);
+                }
+            }
+
+            if (t->callback) {
+                t->callback(recv_buf + 14, nrecv - 14, t->user_data);
+            }
+        } else {
+            if (t->callback) {
+                t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                t->callback(recv_buf + 12, nrecv - 12, t->user_data);
             }
         }
     }
 
     FREE(recv_buf);
+}
+
+void *child_thd_callback(void *arg) {
+    assert(arg);
+
+    T t = (T) arg;
+
+    if (AB_RTSP_OVER_TCP == t->rtp_over_opt) {
+        process_rtp_over_tcp(t);
+    } else if (AB_RTSP_OVER_UDP == t->rtp_over_opt) {
+        process_rtp_over_udp(t);
+    }
 
     return NULL;
-}
-
-T ab_rtsp_client_new(const char *url,
-    void (*cb)(const unsigned char *, unsigned int, void *), void *user_data) {
-    char host_buf[64] = {0};
-    unsigned short port = 0;
-
-    if (!parse_rtsp_addr(url, host_buf, sizeof(host_buf), &port)) {
-        return NULL;
-    }
-
-    if (ip_check(host_buf) != IP_VERSION_4 || 0 == port) {
-        return NULL;
-    }
-
-    T result;
-    NEW(result);
-
-    result->user_data = user_data;
-    result->callback = cb;
-
-    result->buf_size = 512 * 1024;
-    result->buf_used = 0;
-    result->buf = (unsigned char *) ALLOC(result->buf_size);
-
-    result->tcp_client = ab_tcp_client_new(host_buf, port);
-
-    if (result->tcp_client) {
-        send_cmd_options(result, url);
-        send_cmd_describe(result, url);
-        send_cmd_setup(result, url);
-        send_cmd_play(result, url);
-    }
-
-    result->quit = false;
-    pthread_create(&result->child_thd, NULL, child_thd_callback, result);
-
-    return result;
-}
-
-void ab_rtsp_client_free(T *t) {
-    assert(t && *t);
-    (*t)->quit = true;
-    pthread_join((*t)->child_thd, NULL);
-    ab_tcp_client_free(&(*t)->tcp_client);
-
-    FREE((*t)->buf);
-    (*t)->buf_size = 0;
-    (*t)->buf_used = 0;
-
-    FREE(*t);
 }

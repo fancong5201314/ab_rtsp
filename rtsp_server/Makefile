@@ -1,6 +1,6 @@
 .PHONY: all clean
 
-TARGET=stream_push
+TARGET=rtsp_push
 
 CC=gcc
 

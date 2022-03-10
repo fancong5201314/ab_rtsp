@@ -16,7 +16,7 @@
 
 #include "ab_net/ab_socket.h"
 #include "ab_net/ab_tcp_server.h"
-#include "ab_net/ab_udp_server.h"
+#include "ab_net/ab_udp_client.h"
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -73,8 +73,8 @@ struct T {
     ab_tcp_server_t rtsp_tcp_srv;
     list_t          clients;
 
-    ab_udp_server_t rtp_udp_srv;
-    ab_udp_server_t rtcp_udp_srv;
+    ab_udp_client_t rtp_udp_srv;
+    ab_udp_client_t rtcp_udp_srv;
 
     int             video_codec;        // @ab_video_codec_t
 
@@ -119,8 +119,8 @@ T ab_rtsp_server_new(unsigned short port, int video_codec) {
 
     result->rtsp_tcp_srv    = ab_tcp_server_new(port, accept_func, result);
 
-    result->rtp_udp_srv     = ab_udp_server_new(RTP_SERVER_PORT);
-    result->rtcp_udp_srv    = ab_udp_server_new(RTCP_SERVER_PORT);
+    result->rtp_udp_srv     = ab_udp_client_new(RTP_SERVER_PORT);
+    result->rtcp_udp_srv    = ab_udp_client_new(RTCP_SERVER_PORT);
 
     result->video_codec     = video_codec;
 
@@ -163,8 +163,8 @@ void ab_rtsp_server_free(T *rtsp) {
         FREE(client);
     }
 
-    ab_udp_server_free(&(*rtsp)->rtcp_udp_srv);
-    ab_udp_server_free(&(*rtsp)->rtp_udp_srv);
+    ab_udp_client_free(&(*rtsp)->rtcp_udp_srv);
+    ab_udp_client_free(&(*rtsp)->rtp_udp_srv);
     ab_tcp_server_free(&(*rtsp)->rtsp_tcp_srv);
 
     FREE(*rtsp);
@@ -343,7 +343,7 @@ int find_start_code(const unsigned char *data, unsigned int data_size) {
     return result;
 }
 
-static void send_rtp_to_client(list_t clients, ab_udp_server_t rtp_udp_srv,
+static void send_rtp_to_client(list_t clients, ab_udp_client_t rtp_udp_srv,
     const unsigned char *data, unsigned int data_len) {
     list_t node = clients;
     while(node) {
@@ -353,7 +353,7 @@ static void send_rtp_to_client(list_t clients, ab_udp_server_t rtp_udp_srv,
                 char addr_buf[32];
                 ab_socket_addr(rtsp_client->sock, 
                     addr_buf, sizeof(addr_buf));
-                ab_udp_server_send(rtp_udp_srv, 
+                ab_udp_client_send(rtp_udp_srv, 
                     addr_buf, rtsp_client->rtp_chn_port,
                     data + sizeof(ab_rtsp_interleaved_frame_t), 
                     data_len - sizeof(ab_rtsp_interleaved_frame_t));

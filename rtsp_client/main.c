@@ -35,9 +35,12 @@ static void signal_catch(int signal_num) {
 int main(int argc, char *argv[]) {
     signal(SIGINT, signal_catch);
 
+    int rtp_over_opt = atoi(argv[1]);
+    const char *rtsp_url = argv[2];
+
     FILE *file = fopen("test.h264", "wb");
     
-    ab_rtsp_client_t handle = ab_rtsp_client_new(argv[1], recv_rtsp_data, file);
+    ab_rtsp_client_t handle = ab_rtsp_client_new(rtp_over_opt, rtsp_url, recv_rtsp_data, file);
     g_quit = false;
     while (!g_quit) {
         sleep(1);

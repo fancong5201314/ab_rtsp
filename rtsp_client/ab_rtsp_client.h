@@ -15,7 +15,12 @@ extern "C" {
 #define T ab_rtsp_client_t
 typedef struct T *T;
 
-extern T    ab_rtsp_client_new(const char *url, 
+/*
+ * rtp_over_opt
+ * RTP传输方式
+ * 1(RTP OVER TCP) 2(RTP OVER UDP)
+ */
+extern T    ab_rtsp_client_new(int rtp_over_opt, const char *url, 
     void (*cb)(const unsigned char *, unsigned int, void *), void *user_data);
 extern void ab_rtsp_client_free(T *t);
 
