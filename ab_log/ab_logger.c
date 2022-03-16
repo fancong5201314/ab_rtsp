@@ -66,8 +66,7 @@ static const char *log_priority_color(int priority) {
     return text_color;
 }
 
-static const char* ab_layout(const log4c_layout_t *a_layout,
-    const log4c_logging_event_t *a_event) {
+static const char* ab_layout(const log4c_layout_t *a_layout, const log4c_logging_event_t *a_event) {
     static char buffer[4096];
     struct tm tm;
     time_t t;
@@ -92,8 +91,7 @@ static const char* ab_layout(const log4c_layout_t *a_layout,
     return buffer;
 }
 
-static int ab_appender_stdout_append(log4c_appender_t* this,
-    const log4c_logging_event_t* a_event) {
+static int ab_appender_stdout_append(log4c_appender_t* this, const log4c_logging_event_t* a_event) {
     return fprintf(stdout, "%s", a_event->evt_rendered_msg);
 }
 
@@ -167,9 +165,7 @@ int ab_logger_init(ab_logger_output to,
     return 0;
 }
 
-void ab_logger_message(int priority,
-    const char *file, int line, const char *fun,
-    const char *fmt, ...) {
+void ab_logger_message(int priority, const char *file, int line, const char *fun, const char *fmt, ...) {
     char new_fmt[2048];
     const char * head_fmt = "[file:%s, line:%d, function:%s] ";
     va_list ap;

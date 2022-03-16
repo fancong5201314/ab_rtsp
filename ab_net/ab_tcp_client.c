@@ -43,23 +43,31 @@ void ab_tcp_client_free(T *t) {
     FREE(*t);
 }
 
-int ab_tcp_client_recv(T t, unsigned char *buf, unsigned int buf_size) {
+int ab_tcp_client_recv(T t, unsigned char *buf, unsigned int buf_size, int timeout) {
     assert(t);
 
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 100 * 1000;
+    int result = -1;
 
-    fd_set rfds;
-    FD_ZERO(&rfds);
+    if (timeout > 0) {
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = timeout * 1000;
 
-    int fd = ab_socket_fd(t->sock);
-    FD_SET(fd, &rfds);
-    if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0 && FD_ISSET(fd, &rfds)) {
-        return ab_socket_recv(t->sock, buf, buf_size);
+        fd_set rfds;
+        FD_ZERO(&rfds);
+
+        int fd = ab_socket_fd(t->sock);
+        FD_SET(fd, &rfds);
+        result = select(fd + 1, &rfds, NULL, NULL, &tv) > 0 && FD_ISSET(fd, &rfds);
+        if (result > 0) {
+            result = ab_socket_recv(t->sock, buf, buf_size);
+        }
+    } else {
+        result = ab_socket_recv(t->sock, buf, buf_size);
     }
 
-    return -1;
+
+    return result;
 }
 
 int  ab_tcp_client_send(T t, const unsigned char *data, unsigned int data_len) {

@@ -18,13 +18,12 @@ typedef struct T *T;
 extern T    ab_udp_client_new(unsigned short port);
 extern void ab_udp_client_free(T *t);
 
+extern int  ab_udp_client_recv(T t,
+    char *addr_buf, unsigned int addr_buf_size, unsigned short *port,
+    unsigned char *buf, unsigned int buf_size, int timeout);
 extern int  ab_udp_client_send(T t,
     const char *addr, unsigned short port,
     const unsigned char *data, unsigned int data_len);
-
-extern int  ab_udp_client_recv(T t,
-    char *addr_buf, unsigned int addr_buf_size, unsigned short *port,
-    unsigned char *buf, unsigned int buf_size);
 
 #undef T
 

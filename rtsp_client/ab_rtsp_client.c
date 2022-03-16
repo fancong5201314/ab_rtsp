@@ -200,7 +200,7 @@ bool send_cmd_options(T t) {
 
     printf("%s\n",buf);
     memset(buf, 0, sizeof(buf));
-    if (ab_tcp_client_recv(t->tcp_client, (unsigned char *) buf, sizeof(buf)) <= 0) {
+    if (ab_tcp_client_recv(t->tcp_client, (unsigned char *) buf, sizeof(buf), -1) <= 0) {
         return false;
     }
 
@@ -224,7 +224,7 @@ bool send_cmd_describe(T t) {
     printf("%s\n", (const char *) buf);
 
     memset(buf, 0, sizeof(buf));
-    if (ab_tcp_client_recv(t->tcp_client, (unsigned char *) buf, sizeof(buf)) <= 0) {
+    if (ab_tcp_client_recv(t->tcp_client, (unsigned char *) buf, sizeof(buf), -1) <= 0) {
         return false;
     }
 
@@ -258,7 +258,7 @@ bool send_cmd_setup(T t) {
     printf("%s\n", buf);
 
     memset(buf, 0, sizeof(buf));
-    if (ab_tcp_client_recv(t->tcp_client, (unsigned char *) buf, sizeof(buf)) <= 0) {
+    if (ab_tcp_client_recv(t->tcp_client, (unsigned char *) buf, sizeof(buf), -1) <= 0) {
         return false;
     }
 
@@ -294,7 +294,7 @@ bool send_cmd_play(T t) {
     printf("%s\n", (const char *) buf);
 
     memset(buf, 0, sizeof(buf));
-    if (ab_tcp_client_recv(t->tcp_client, (unsigned char *) buf, sizeof(buf)) <= 0) {
+    if (ab_tcp_client_recv(t->tcp_client, (unsigned char *) buf, sizeof(buf), -1) <= 0) {
         return false;
     }
 
@@ -327,7 +327,7 @@ static void process_rtp_over_tcp(T t) {
     unsigned int start_pos = 0;
 
     while (!t->quit) {
-        int nrecv = ab_tcp_client_recv(t->tcp_client, recv_buf, recv_buf_size);
+        int nrecv = ab_tcp_client_recv(t->tcp_client, recv_buf, recv_buf_size, -1);
         if (nrecv <= 0) {
             continue;
         }
@@ -381,7 +381,7 @@ static void process_rtp_over_udp(T t) {
         recv_port = 0;
 
         int nrecv = ab_udp_client_recv(t->udp_rtp_client, 
-            recv_addr, sizeof(recv_addr), &recv_port, recv_buf, recv_buf_size);
+            recv_addr, sizeof(recv_addr), &recv_port, recv_buf, recv_buf_size, -1);
         if (nrecv <= 0) {
             continue;
         }

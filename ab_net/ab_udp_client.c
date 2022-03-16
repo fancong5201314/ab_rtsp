@@ -41,6 +41,39 @@ void ab_udp_client_free(T *t) {
     FREE(*t);
 }
 
+int ab_udp_client_recv(T t,
+    char *addr_buf, unsigned int addr_buf_size, 
+    unsigned short *port,
+    unsigned char *buf, unsigned int buf_size, int timeout) {
+    assert(t);
+
+    int result = -1;
+
+    if (timeout > 0) {
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = timeout * 1000;
+
+        fd_set rfds;
+        FD_ZERO(&rfds);
+
+        int fd = ab_socket_fd(t->sock);
+        FD_SET(fd, &rfds);
+        result = select(fd + 1, &rfds, NULL, NULL, &tv) > 0 && FD_ISSET(fd, &rfds);
+        if (result > 0) {
+            result = ab_socket_udp_recv(t->sock, 
+                addr_buf, addr_buf_size,
+                port, buf, buf_size);
+        }
+    } else {
+        result = ab_socket_udp_recv(t->sock, 
+            addr_buf, addr_buf_size,
+            port, buf, buf_size);
+    }
+
+    return result;
+}
+
 int  ab_udp_client_send(T t,
     const char *addr, unsigned short port,
     const unsigned char *data, unsigned int data_len) {
@@ -48,28 +81,4 @@ int  ab_udp_client_send(T t,
 
     return ab_socket_udp_send(t->sock, 
         addr, port, data, data_len);
-}
-
-int  ab_udp_client_recv(T t,
-    char *addr_buf, unsigned int addr_buf_size, 
-    unsigned short *port,
-    unsigned char *buf, unsigned int buf_size) {
-    assert(t);
-
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 100 * 1000;
-
-    fd_set rfds;
-    FD_ZERO(&rfds);
-
-    int fd = ab_socket_fd(t->sock);
-    FD_SET(fd, &rfds);
-    if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0 && FD_ISSET(fd, &rfds)) {
-        return ab_socket_udp_recv(t->sock, 
-            addr_buf, addr_buf_size,
-            port, buf, buf_size);
-    }
-
-    return -1;
 }
