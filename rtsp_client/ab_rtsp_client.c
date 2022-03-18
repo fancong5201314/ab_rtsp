@@ -23,27 +23,48 @@
 
 #include <arpa/inet.h>
 
+/*
+ * H.265 header
+ * +---------------+---------------+
+ * |0|1|2|3|4|5|6|7|0|1|2|3|4|5|6|7|
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |F|   NALType |  LayerId  | TID |
+ * +--------------+----------------+
+ * F: 0
+ * LayerId: 0
+ * TID: 001
+ */
+
 #define RTP_CLIENT_PORT     30001
 #define RTCP_CLIENT_PORT    30002
 
 #define T ab_rtsp_client_t
 
-enum ab_rtsp_over_method_t {
+enum ab_rtsp_over_opt_t {
     AB_RTSP_OVER_NONE = 0,
     AB_RTSP_OVER_TCP,
     AB_RTSP_OVER_UDP
 };
 
+enum ab_video_codec_t {
+    AB_VIDEO_CODEC_NONE = 0,
+    AB_VIDEO_CODEC_H264,
+    AB_VIDEO_CODEC_H265
+};
+
 struct T {
-    int rtp_over_opt;
+    int rtp_over_opt;                   // @ab_rtsp_over_opt_t
 
     char url[128];
     char srv_addr[64];
+    unsigned short port;
 
     void *user_data;
     void (*callback)(const unsigned char *, unsigned int, void *);
 
     ab_tcp_client_t tcp_client;
+
+    int video_codec;                    // @ab_video_codec_t
 
     unsigned short udp_rtp_srv_port;
     unsigned short udp_rtcp_srv_port;
@@ -84,16 +105,18 @@ T ab_rtsp_client_new(int rtp_over_opt, const char *url,
     NEW(result);
 
     result->rtp_over_opt = rtp_over_opt;
-    int url_len = strlen(url);
-    if (url_len < sizeof(result->url)) {
-        memcpy(result->url, url, url_len);
+    int len = strlen(url);
+    if (len < sizeof(result->url)) {
+        memcpy(result->url, url, len);
     }
 
-    int host_len = strlen(host_buf);
+    len = strlen(host_buf);
     memset(result->srv_addr, 0, sizeof(result->srv_addr));
-    if (host_len < sizeof(result->srv_addr)) {
-        memcpy(result->srv_addr, host_buf, host_len);
+    if (len < sizeof(result->srv_addr)) {
+        memcpy(result->srv_addr, host_buf, len);
     }
+
+    result->port = port;
 
     result->user_data = user_data;
     result->callback = cb;
@@ -148,7 +171,6 @@ bool parse_rtsp_addr(const char *rtsp_addr,
     }
 
     pos_start += 7;
-
     char *pos_end = strchr(pos_start, '/');
     char buf[128] = {0};
     if (pos_end) {
@@ -189,10 +211,13 @@ bool parse_rtsp_addr(const char *rtsp_addr,
 bool send_cmd_options(T t) {
     assert(t);
 
+    char uri[64];
+    snprintf(uri, sizeof(uri), "rtsp://%s:%d", t->srv_addr, t->port);
+
     char buf[1024];
     snprintf(buf, sizeof(buf), 
         "OPTIONS %s RTSP/1.0\r\n"
-        "CSeq: %u\r\n\r\n", t->url, ++t->seq);
+        "CSeq: %u\r\n\r\n", uri, ++t->seq);
     unsigned int buf_len =strlen(buf);
     if (ab_tcp_client_send(t->tcp_client, (unsigned char *) buf, buf_len) <= 0) {
         return false;
@@ -211,11 +236,15 @@ bool send_cmd_options(T t) {
 bool send_cmd_describe(T t) {
     assert(t);
 
+    char uri[64];
+    snprintf(uri, sizeof(uri), "rtsp://%s:%d/", t->srv_addr, t->port);
+
     char buf[1024];
     snprintf(buf, sizeof(buf), 
         "DESCRIBE %s RTSP/1.0\r\n"
         "CSeq: %u\r\n"
-        "Accept: application/sdp\r\n\r\n", t->url, ++t->seq);
+        "Accept: application/sdp\r\n\r\n", uri, ++t->seq);
+    
     unsigned int buf_len =strlen(buf);
     if (ab_tcp_client_send(t->tcp_client, (unsigned char *) buf, buf_len) <= 0) {
         return false;
@@ -229,23 +258,34 @@ bool send_cmd_describe(T t) {
     }
 
     printf("%s\n", buf);
+    if (strstr(buf, "H264") != NULL) {
+        t->video_codec = AB_VIDEO_CODEC_H264;
+    } else if (strstr(buf, "H265") != NULL) {
+        t->video_codec = AB_VIDEO_CODEC_H265;
+    } else {
+        t->video_codec = AB_VIDEO_CODEC_NONE;
+    }
+
     return true;
 }
 
 bool send_cmd_setup(T t) {
     assert(t);
 
+    char uri[64];
+    snprintf(uri, sizeof(uri), "rtsp://%s:%d/", t->srv_addr, t->port);
+
     char buf[1024];
     if (AB_RTSP_OVER_TCP == t->rtp_over_opt) {
         snprintf(buf, sizeof(buf), 
             "SETUP %s RTSP/1.0\r\n"
             "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
-            "CSeq: %u\r\n\r\n", t->url, ++t->seq);
+            "CSeq: %u\r\n\r\n", uri, ++t->seq);
     } else if (AB_RTSP_OVER_UDP == t->rtp_over_opt) {
         snprintf(buf, sizeof(buf), 
             "SETUP %s RTSP/1.0\r\n"
-            "Transport: RTP/AVP;unicast;client_port=%u-%u\r\n"
-            "CSeq: %u\r\n\r\n", t->url, RTP_CLIENT_PORT, RTCP_CLIENT_PORT, ++t->seq);
+            "Transport: RTP/AVP/UDP;unicast;client_port=%u-%u\r\n"
+            "CSeq: %u\r\n\r\n", uri, RTP_CLIENT_PORT, RTCP_CLIENT_PORT, ++t->seq);
     } else {
         return false;
     }
@@ -263,6 +303,7 @@ bool send_cmd_setup(T t) {
     }
 
     printf("%s\n", buf);
+
     char *pos = strstr(buf, "server_port");
     if (pos != NULL) {
         sscanf(pos, "server_port=%hu-%hu\r\n", 
@@ -280,12 +321,15 @@ bool send_cmd_setup(T t) {
 bool send_cmd_play(T t) {
     assert(t);
 
+    char uri[64];
+    snprintf(uri, sizeof(uri), "rtsp://%s:%d/", t->srv_addr, t->port);
+
     char buf[1024];
     snprintf(buf, sizeof(buf), 
         "PLAY %s RTSP/1.0\r\n"
         "CSeq: %u\r\n"
         "Session: %s\r\n"
-        "Range: npt=0.000-\r\n\r\n", t->url, ++t->seq, t->session);
+        "Range: npt=0.000-\r\n\r\n", uri, ++t->seq, t->session);
     unsigned int buf_len =strlen(buf);
     if (ab_tcp_client_send(t->tcp_client, (unsigned char *) buf, buf_len) <= 0) {
         return false;
@@ -305,11 +349,14 @@ bool send_cmd_play(T t) {
 bool send_cmd_teardown(T t) {
     assert(t);
 
+    char uri[64];
+    snprintf(uri, sizeof(uri), "rtsp://%s:%d", t->srv_addr, t->port);
+
     char buf[1024];
     snprintf(buf, sizeof(buf), 
         "TEARDOWN %s RTSP/1.0\r\n"
         "CSeq: %u\r\n"
-        "Session: %s\r\n\r\n", t->url, ++t->seq, t->session);
+        "Session: %s\r\n\r\n", uri, ++t->seq, t->session);
     unsigned int buf_len =strlen(buf);
     if (ab_tcp_client_send(t->tcp_client, (unsigned char *) buf, buf_len) <= 0) {
         return false;
@@ -340,27 +387,51 @@ static void process_rtp_over_tcp(T t) {
 
             unsigned short rtp_len = ntohs(*(unsigned short *)(recv_buf + start_pos + 2));
 
-            unsigned char nal_type = recv_buf[start_pos + 16] & 0x1F;
             unsigned int slice = 0x1000000;
-            if  (0x1C == nal_type || 0x1D == nal_type) {
-                unsigned char flag = recv_buf[start_pos + 17] & 0xE0;
-                if (0x80 == flag) { // start
+            if (AB_VIDEO_CODEC_H264 == t->video_codec) {
+                unsigned char nal_type = recv_buf[start_pos + 16] & 0x1f;
+                if  (0x1c == nal_type || 0x1d == nal_type) {
+                    unsigned char flag = recv_buf[start_pos + 17] & 0xe0;
+                    if (0x80 == flag) {
+                        if (t->callback) {
+                            unsigned char nal_fua = (recv_buf[start_pos + 16] & 0xe0) | (recv_buf[start_pos + 17] & 0x1f);
+                            t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                            t->callback(&nal_fua, 1, t->user_data);
+                        }
+                    }
+
                     if (t->callback) {
-                        unsigned char nal_fua = (recv_buf[start_pos + 16] & 0xE0) | (recv_buf[start_pos + 17] & 0x1F);
+                        t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
+                    }
+                } else {
+                    if (t->callback) {
                         t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
-                        t->callback(&nal_fua, 1, t->user_data);
+                        t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
+                    }
+                } 
+            } else if (AB_VIDEO_CODEC_H265 == t->video_codec) {
+                if (0x62 == recv_buf[start_pos + 16] && 0x1 == recv_buf[start_pos +  17]) {
+                    unsigned char flag = recv_buf[start_pos + 18] & 0xc0;
+                    if (0x80 == flag) {
+                        if (t->callback) {
+                            unsigned char nal_type = (recv_buf[start_pos + 18] << 1) & 0x7e;
+                            t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                            t->callback(&nal_type, 1, t->user_data);
+                            unsigned char tid = 0x1;
+                            t->callback(&tid, 1, t->user_data);
+                        }
+                    }
+
+                    if (t->callback) {
+                        t->callback(recv_buf + start_pos + 19, rtp_len - 15, t->user_data);
+                    }
+                } else {
+                    if (t->callback) {
+                        t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                        t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
                     }
                 }
-
-                if (t->callback) {
-                    t->callback(recv_buf + start_pos + 18, rtp_len - 14, t->user_data);
-                }
-            } else {
-                if (t->callback) {
-                    t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
-                    t->callback(recv_buf + start_pos + 16, rtp_len - 12, t->user_data);
-                }
-            } 
+            }
 
             start_pos += rtp_len + 4;
         }
@@ -391,25 +462,49 @@ static void process_rtp_over_udp(T t) {
             continue;
         }
 
-        unsigned char nal_type = recv_buf[12] & 0x1F;
         unsigned int slice = 0x1000000;
-        if  (0x1C == nal_type || 0x1D == nal_type) {
-            unsigned char flag = recv_buf[13] & 0xE0;
-            if (0x80 == flag) {
+        if (AB_VIDEO_CODEC_H264 == t->video_codec) {
+            unsigned char nal_type = recv_buf[12] & 0x1f;
+            if  (0x1c == nal_type || 0x1d == nal_type) {
+                unsigned char flag = recv_buf[13] & 0xe0;
+                if (0x80 == flag) {
+                    if (t->callback) {
+                        unsigned char nal_fua = (recv_buf[12] & 0xe0) | (recv_buf[13] & 0x1f);
+                        t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                        t->callback(&nal_fua, 1, t->user_data);
+                    }
+                }
+
                 if (t->callback) {
-                    unsigned char nal_fua = (recv_buf[12] & 0xE0) | (recv_buf[13] & 0x1F);
+                    t->callback(recv_buf + 14, nrecv - 14, t->user_data);
+                }
+            } else {
+                if (t->callback) {
                     t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
-                    t->callback(&nal_fua, 1, t->user_data);
+                    t->callback(recv_buf + 12, nrecv - 12, t->user_data);
                 }
             }
+        } else if (AB_VIDEO_CODEC_H265 == t->video_codec) {
+            if (0x62 == recv_buf[12] && 0x1 == recv_buf[13]) {
+                unsigned char flag = recv_buf[14] & 0xc0;
+                if (0x80 == flag) {
+                    if (t->callback) {
+                        unsigned char nal_type = (recv_buf[14] << 1) & 0x7e;
+                        t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                        t->callback(&nal_type, 1, t->user_data);
+                        unsigned char tid = 0x1;
+                        t->callback(&tid, 1, t->user_data);
+                    }
+                }
 
-            if (t->callback) {
-                t->callback(recv_buf + 14, nrecv - 14, t->user_data);
-            }
-        } else {
-            if (t->callback) {
-                t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
-                t->callback(recv_buf + 12, nrecv - 12, t->user_data);
+                if (t->callback) {
+                    t->callback(recv_buf + 15, nrecv - 15, t->user_data);
+                }
+            } else {
+                if (t->callback) {
+                    t->callback((unsigned char *) &slice, sizeof(slice), t->user_data);
+                    t->callback(recv_buf + 12, nrecv - 12, t->user_data);
+                }
             }
         }
     }
